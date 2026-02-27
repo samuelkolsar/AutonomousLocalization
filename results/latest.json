@@ -1,0 +1,32 @@
+{
+  "step": 1,
+  "timestamp": "2026-02-26T16:52:03.170937",
+  "image": "Kuvatõmmis 2026-02-26 1633.png",
+  "observation": [
+    {
+      "city": "Tallinn",
+      "distance_km": 193,
+      "ocr_confidence": 0.997
+    },
+    {
+      "city": "Valga",
+      "distance_km": 92,
+      "ocr_confidence": 1.0
+    },
+    {
+      "city": "Viljandi",
+      "distance_km": 83,
+      "ocr_confidence": 0.933
+    },
+    {
+      "city": "Võru",
+      "distance_km": 71,
+      "ocr_confidence": 0.99
+    }
+  ],
+  "estimate": {
+    "lat": 58.36119188564955,
+    "lon": 26.843720342767572,
+    "uncertainty_m": 3098.6770988829344
+  }
+}

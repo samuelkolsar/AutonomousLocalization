@@ -1,0 +1,13 @@
+osmnx
+networkx
+geopandas
+shapely
+scipy
+matplotlib
+numpy
+tqdm
+folium
+ultralytics
+easyocr
+rapidfuzz
+opencv-python
