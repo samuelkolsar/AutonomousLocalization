@@ -19,7 +19,7 @@ YOLO_MODEL_PATH = "minu_mudel_best.pt"   # path to your trained model
 
 ESTONIAN_PLACE_NAMES = [
     "Tallinn", "Tartu", "Narva", "Pärnu", "Kohtla-Järve", "Viljandi",
-    "Rakvere", "Maardu", "Sillamäe", "Kuressaare", "Võru", "Valga", "Värska"
+    "Rakvere", "Maardu", "Sillamäe", "Kuressaare", "Võru", "Valga", "Värska",
     "Jõhvi", "Haapsalu", "Keila", "Paide", "Tapa", "Põlva", "Jõgeva",
     "Saue", "Märjamaa", "Türi", "Elva", "Rapla", "Kärdla", "Kiviõli",
     "Mustvee", "Kallaste", "Omedu", "Kanepi", "Otepää", "Antsla",

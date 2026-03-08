@@ -1,32 +1,32 @@
 {
   "step": 1,
-  "timestamp": "2026-02-26T16:52:03.170937",
-  "image": "Kuvatõmmis 2026-02-26 1633.png",
+  "timestamp": "2026-03-08T19:18:16.736191",
+  "image": "testing01.png",
   "observation": [
     {
       "city": "Tallinn",
       "distance_km": 193,
-      "ocr_confidence": 0.997
+      "ocr_confidence": 0.999
     },
     {
       "city": "Valga",
       "distance_km": 92,
-      "ocr_confidence": 1.0
+      "ocr_confidence": 0.995
     },
     {
       "city": "Viljandi",
       "distance_km": 83,
-      "ocr_confidence": 0.933
+      "ocr_confidence": 0.999
     },
     {
       "city": "Võru",
       "distance_km": 71,
-      "ocr_confidence": 0.99
+      "ocr_confidence": 0.986
     }
   ],
   "estimate": {
-    "lat": 58.36119188564955,
-    "lon": 26.843720342767572,
-    "uncertainty_m": 3098.6770988829344
+    "lat": 58.36150771993895,
+    "lon": 26.845159537892904,
+    "uncertainty_m": 2246.651855492862
   }
 }

@@ -250,12 +250,88 @@ class ParticleFilter:
         lat, lon, unc = self.estimate()
         print(f"  Initial estimate: ({lat:.5f}, {lon:.5f})  uncertainty ≈ {unc:.0f} m")
 
-    def predict(self, delta_distance_m: float = 0.0,
-                delta_heading_deg: float = 0.0) -> None:
-        """Odometry stub — implement when odometry data is available."""
-        if delta_distance_m == 0.0:
+    def predict(self, delta_distance_m: float = 0.0) -> None:
+        """
+        Propagate each particle forward along the road network by
+        delta_distance_m metres (plus Gaussian noise for odometry error).
+
+        At each junction the particle picks a random outgoing edge,
+        simulating unknown turn decisions between sign observations.
+        """
+        if delta_distance_m <= 0.0:
             return
-        raise NotImplementedError("Odometry not yet implemented.")
+
+        print(f"\n[Filter] Predict — advancing particles {delta_distance_m:.0f} m ...")
+
+        # Odometry noise: 5% of distance travelled, minimum 10 m
+        noise_std_m = max(10.0, delta_distance_m * 0.05)
+
+        # Pre-build adjacency for fast junction lookup
+        adj = {}
+        for u, v, key, data in self.G.edges(keys=True, data=True):
+            length = data.get("length", 1.0)
+            if u not in adj:
+                adj[u] = []
+            adj[u].append((v, length, data.get("geometry")))
+
+        new_particles = []
+        for p in self.particles:
+            travel = max(0.0, delta_distance_m + rng.normal(0, noise_std_m))
+
+            cur_u, cur_v, cur_t = p.edge_u, p.edge_v, p.t
+
+            # Get current edge length
+            edge_data = self.G.get_edge_data(cur_u, cur_v)
+            if edge_data is None:
+                new_particles.append(p)
+                continue
+            if isinstance(edge_data, dict):
+                edge_data = edge_data.get(0) or next(iter(edge_data.values()))
+            cur_len   = edge_data.get("length", 1.0)
+            remaining = cur_len * (1.0 - cur_t)
+
+            while travel > 0:
+                if travel < remaining:
+                    cur_t  = cur_t + (travel / cur_len)
+                    cur_t  = min(cur_t, 1.0)
+                    travel = 0.0
+                else:
+                    travel   -= remaining
+                    cur_u     = cur_v
+                    cur_t     = 0.0
+                    neighbors = adj.get(cur_u, [])
+                    if not neighbors:
+                        break
+                    nv, nlen, _ = neighbors[rng.integers(len(neighbors))]
+                    cur_v     = nv
+                    cur_len   = nlen
+                    remaining = cur_len
+
+            # Resolve coordinates at new position
+            ed = self.G.get_edge_data(cur_u, cur_v)
+            if ed is None:
+                new_particles.append(p)
+                continue
+            if isinstance(ed, dict):
+                ed = ed.get(0) or next(iter(ed.values()))
+            geom = ed.get("geometry")
+            if geom is not None:
+                pt  = geom.interpolate(cur_t, normalized=True)
+                lat, lon = pt.y, pt.x
+            else:
+                nd_u = self.G.nodes[cur_u]
+                nd_v = self.G.nodes[cur_v]
+                lat  = nd_u["y"] * (1 - cur_t) + nd_v["y"] * cur_t
+                lon  = nd_u["x"] * (1 - cur_t) + nd_v["x"] * cur_t
+
+            new_particles.append(Particle(
+                lat=lat, lon=lon,
+                edge_u=cur_u, edge_v=cur_v,
+                t=cur_t, weight=p.weight
+            ))
+
+        self.particles = new_particles
+        print(f"  Particles propagated.")
 
     def update(self, observation: list[dict]) -> None:
         self.step_index += 1
@@ -291,25 +367,46 @@ class ParticleFilter:
         lat, lon, unc = self.estimate()
         print(f"  Updated estimate: ({lat:.5f}, {lon:.5f})  uncertainty ≈ {unc:.0f} m")
 
+    def _get_edge_length_and_geom(self, u: int, v: int) -> tuple[float, Optional[object]]:
+        """Return (length_m, geometry) for edge (u, v). Length in metres."""
+        ed = self.G.get_edge_data(u, v)
+        if ed is None:
+            return 1.0, None
+        if isinstance(ed, dict):
+            ed = ed.get(0) or next(iter(ed.values()))
+        length = ed.get("length", 1.0)
+        geom = ed.get("geometry")
+        return length, geom
+
     def _systematic_resample(self, weights: np.ndarray) -> None:
         N      = N_PARTICLES
         cumsum = np.cumsum(weights)
         cumsum[-1] = 1.0
         positions  = (rng.random() + np.arange(N)) / N
         indices    = np.searchsorted(cumsum, positions)
-        jitter_deg = ROUGHENING_SIGMA_M / 111_320
 
-        self.particles = [
-            Particle(
-                lat    = self.particles[i].lat + rng.normal(0, jitter_deg),
-                lon    = self.particles[i].lon + rng.normal(0, jitter_deg / np.cos(np.radians(self.particles[i].lat))),
-                edge_u = self.particles[i].edge_u,
-                edge_v = self.particles[i].edge_v,
-                t      = self.particles[i].t,
-                weight = 1.0 / N,
-            )
-            for i in indices
-        ]
+        new_particles = []
+        for i in indices:
+            p = self.particles[i]
+            edge_len, geom = self._get_edge_length_and_geom(p.edge_u, p.edge_v)
+            # Roughen along the edge (constraint-preserving): jitter t, then recompute lat/lon
+            sigma_t = ROUGHENING_SIGMA_M / max(edge_len, 1.0)
+            sigma_t = min(sigma_t, 0.15)  # cap so we don't jump too far along short edges
+            t_new = np.clip(p.t + rng.normal(0, sigma_t), 0.0, 1.0)
+            if geom is not None:
+                pt = geom.interpolate(t_new, normalized=True)
+                lat, lon = pt.y, pt.x
+            else:
+                nd_u = self.G.nodes[p.edge_u]
+                nd_v = self.G.nodes[p.edge_v]
+                lat = nd_u["y"] * (1 - t_new) + nd_v["y"] * t_new
+                lon = nd_u["x"] * (1 - t_new) + nd_v["x"] * t_new
+            new_particles.append(Particle(
+                lat=lat, lon=lon,
+                edge_u=p.edge_u, edge_v=p.edge_v,
+                t=t_new, weight=1.0 / N,
+            ))
+        self.particles = new_particles
         print(f"  Resampled → {N} particles")
 
     def estimate(self) -> tuple[float, float, float]:
@@ -320,7 +417,9 @@ class ParticleFilter:
         w_lon   = np.average(lons, weights=weights)
         var_lat = np.average((lats - w_lat)**2, weights=weights)
         var_lon = np.average((lons - w_lon)**2, weights=weights)
-        unc_m   = np.sqrt(var_lat + var_lon) * 111_320
+        # Convert degree variances to metres: 1° lat ≈ 111320 m; 1° lon ≈ 111320*cos(lat) m
+        cos_lat = np.cos(np.radians(w_lat))
+        unc_m   = 111_320 * np.sqrt(var_lat + var_lon * (cos_lat ** 2))
         return w_lat, w_lon, unc_m
 
     def _save_snapshot(self, label: str, observation: list[dict]) -> None:

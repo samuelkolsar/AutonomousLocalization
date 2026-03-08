@@ -34,6 +34,28 @@ POLL_INTERVAL = 2.0   # seconds between folder scans
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}
 
 
+# ── Odometry loading ─────────────────────────────────────────────────────────
+
+def load_odometry(image_path: Path) -> float:
+    """
+    Look for a paired odometry JSON file next to the image.
+    e.g. images/testing01.png → images/testing01_odometry.json
+
+    Expected format:
+        {"image": "testing01.png", "distance_m": 1240}
+
+    Returns 0.0 if no odometry file is found.
+    """
+    odo_path = image_path.parent / (image_path.stem + "_odometry.json")
+    if not odo_path.exists():
+        return 0.0
+    with open(odo_path) as f:
+        data = json.load(f)
+    distance_m = float(data.get("distance_m", 0.0))
+    print(f"  Odometry: {distance_m:.0f} m since last image")
+    return distance_m
+
+
 # ── Processed image tracking ─────────────────────────────────────────────────
 
 def load_processed() -> set:
@@ -138,12 +160,15 @@ def main():
                     save_processed(processed)
                     continue
 
-                # Step 2 — Particle filter
+                # Step 2 — Odometry (only relevant after first observation)
+                distance_m = load_odometry(image_path)
+
+                # Step 3 — Particle filter
                 try:
                     if not pf.initialised:
                         pf.initialise(destinations)
                     else:
-                        pf.predict(delta_distance_m=0)   # odometry hook
+                        pf.predict(delta_distance_m=distance_m)
                         pf.update(destinations)
                 except Exception as e:
                     print(f"  ERROR during localisation: {e}")
@@ -151,11 +176,11 @@ def main():
                     save_processed(processed)
                     continue
 
-                # Step 3 — Save results
+                # Step 4 — Save results
                 lat, lon, unc = pf.estimate()
                 save_result(image_path.name, destinations, lat, lon, unc, pf.step_index)
 
-                # Step 4 — Generate maps
+                # Step 5 — Generate maps
                 try:
                     plot_particle_map(pf, G, city_svc, output_dir=RESULTS_DIR)
                 except Exception as e:
