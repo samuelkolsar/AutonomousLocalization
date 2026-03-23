@@ -1,32 +1,32 @@
 {
   "step": 1,
-  "timestamp": "2026-03-08T19:18:16.736191",
+  "timestamp": "2026-03-08T19:50:49.722303",
   "image": "testing01.png",
   "observation": [
     {
-      "city": "Tallinn",
-      "distance_km": 193,
+      "city": "Võru",
+      "distance_km": 71,
       "ocr_confidence": 0.999
-    },
-    {
-      "city": "Valga",
-      "distance_km": 92,
-      "ocr_confidence": 0.995
     },
     {
       "city": "Viljandi",
       "distance_km": 83,
-      "ocr_confidence": 0.999
+      "ocr_confidence": 0.998
     },
     {
-      "city": "Võru",
-      "distance_km": 71,
-      "ocr_confidence": 0.986
+      "city": "Valga",
+      "distance_km": 92,
+      "ocr_confidence": 0.996
+    },
+    {
+      "city": "Tallinn",
+      "distance_km": 193,
+      "ocr_confidence": 0.994
     }
   ],
   "estimate": {
-    "lat": 58.36150771993895,
-    "lon": 26.845159537892904,
-    "uncertainty_m": 2246.651855492862
+    "lat": 58.361412852318125,
+    "lon": 26.843797398283005,
+    "uncertainty_m": 2315.057808424355
   }
 }

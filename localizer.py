@@ -32,10 +32,13 @@ CACHE_DIR           = Path("cache")
 GRAPH_FILE          = CACHE_DIR / "estonia_drive.pkl"
 
 N_PARTICLES           = 1000
-SCORE_SIGMA_M         = 2000   # forgiving enough for rounded km signs
+SCORE_SIGMA_M         = 2000   # base sigma (m); tune on validation (e.g. 1000–3000)
 EDGE_SAMPLE_SPACING_M = 50
 RESAMPLE_THRESHOLD    = 0.5
 ROUGHENING_SIGMA_M    = 30
+# Observation model: low-confidence readings get wider sigma (less influence)
+CONFIDENCE_FLOOR      = 0.2    # avoid sigma_eff exploding for very low conf
+MIN_LIKELIHOOD        = 1e-6   # cap per-observation factor so one bad read doesn't kill weights
 
 rng = np.random.default_rng(42)
 
@@ -139,6 +142,18 @@ class Particle:
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
+def _observation_factor(d_actual: float, d_sign: float, conf: float,
+                        sigma: float = SCORE_SIGMA_M) -> float:
+    """
+    Per-observation likelihood factor. Low OCR confidence widens sigma so
+    that reading has less influence; factor is capped to avoid one bad read
+    killing weights.
+    """
+    sigma_eff = sigma / np.sqrt(max(conf, CONFIDENCE_FLOOR))
+    raw = np.exp(-0.5 * ((d_actual - d_sign) / sigma_eff) ** 2)
+    return max(raw, MIN_LIKELIHOOD)
+
+
 def score_particle(p: Particle, observation: list[dict],
                    city_svc: CityDistanceService,
                    sigma: float = SCORE_SIGMA_M) -> float:
@@ -152,7 +167,7 @@ def score_particle(p: Particle, observation: list[dict],
         if du is None or dv is None:
             return 0.0
         d_actual = du * (1 - p.t) + dv * p.t
-        total   *= conf * np.exp(-0.5 * ((d_actual - d_sign) / sigma) ** 2)
+        total   *= _observation_factor(d_actual, d_sign, conf, sigma)
     return total
 
 
@@ -224,7 +239,7 @@ class ParticleFilter:
                     d_sign = det["distance_km"] * 1000
                     conf   = det["ocr_confidence"]
                     d_act  = endpoint_du[city]*(1-t) + endpoint_dv[city]*t
-                    s     *= conf * np.exp(-0.5*((d_act - d_sign)/SCORE_SIGMA_M)**2)
+                    s     *= _observation_factor(d_act, d_sign, conf, SCORE_SIGMA_M)
                 if s > 1e-12:
                     pool_lats.append(pt.y);  pool_lons.append(pt.x)
                     pool_us.append(u);       pool_vs.append(v)
@@ -248,7 +263,9 @@ class ParticleFilter:
         self._save_snapshot("init", observation)
         self.step_index = 1
         lat, lon, unc = self.estimate()
+        map_lat, map_lon, map_unc = self.estimate_map()
         print(f"  Initial estimate: ({lat:.5f}, {lon:.5f})  uncertainty ≈ {unc:.0f} m")
+        print(f"  Initial MAP:      ({map_lat:.5f}, {map_lon:.5f})  spread ≈ {map_unc:.0f} m")
 
     def predict(self, delta_distance_m: float = 0.0) -> None:
         """
@@ -334,8 +351,8 @@ class ParticleFilter:
         print(f"  Particles propagated.")
 
     def update(self, observation: list[dict]) -> None:
-        self.step_index += 1
-        print(f"\n[Filter] Update #{self.step_index} ...")
+        target_step = self.step_index + 1
+        print(f"\n[Filter] Update #{target_step} ...")
 
         # Load cities, dropping any that fail geocoding
         observation = [d for d in observation if self.city_svc.load(d["city"])]
@@ -363,9 +380,12 @@ class ParticleFilter:
         if ess_ratio < RESAMPLE_THRESHOLD:
             self._systematic_resample(new_weights)
 
+        self.step_index = target_step
         self._save_snapshot(f"update_{self.step_index}", observation)
         lat, lon, unc = self.estimate()
+        map_lat, map_lon, map_unc = self.estimate_map()
         print(f"  Updated estimate: ({lat:.5f}, {lon:.5f})  uncertainty ≈ {unc:.0f} m")
+        print(f"  Updated MAP:      ({map_lat:.5f}, {map_lon:.5f})  spread ≈ {map_unc:.0f} m")
 
     def _get_edge_length_and_geom(self, u: int, v: int) -> tuple[float, Optional[object]]:
         """Return (length_m, geometry) for edge (u, v). Length in metres."""
@@ -422,13 +442,37 @@ class ParticleFilter:
         unc_m   = 111_320 * np.sqrt(var_lat + var_lon * (cos_lat ** 2))
         return w_lat, w_lon, unc_m
 
+    def estimate_map(self) -> tuple[float, float, float]:
+        """
+        MAP-style estimate using the highest-weight particle.
+        Returns (lat, lon, local spread in metres around MAP).
+        """
+        if not self.particles:
+            raise RuntimeError("No particles available for MAP estimate.")
+
+        weights = np.array([p.weight for p in self.particles])
+        lats    = np.array([p.lat for p in self.particles])
+        lons    = np.array([p.lon for p in self.particles])
+
+        idx = int(np.argmax(weights))
+        p0  = self.particles[idx]
+
+        # Local ENU-style approximation around MAP point for spread.
+        dy = 111_320.0 * (lats - p0.lat)
+        dx = 111_320.0 * np.cos(np.radians(p0.lat)) * (lons - p0.lon)
+        d2 = dx * dx + dy * dy
+        spread_m = float(np.sqrt(np.average(d2, weights=weights)))
+        return p0.lat, p0.lon, spread_m
+
     def _save_snapshot(self, label: str, observation: list[dict]) -> None:
         lat, lon, unc = self.estimate()
+        map_lat, map_lon, map_unc = self.estimate_map()
         self.history.append({
             "label":       label,
             "observation": observation,
             "particles":   copy.deepcopy(self.particles),
             "estimate":    {"lat": lat, "lon": lon, "uncertainty_m": unc},
+            "estimate_map": {"lat": map_lat, "lon": map_lon, "uncertainty_m": map_unc},
         })
 
 

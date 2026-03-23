@@ -3,6 +3,8 @@ app.py — Main application loop
 
 Drop images into the `images/` folder while this script is running.
 Each new image is automatically processed through OCR + particle filter.
+For each image after the first one, you are asked in terminal how many
+metres were travelled since the previous image.
 Results (coordinates + maps) are written to `results/`.
 
 Usage:
@@ -14,6 +16,7 @@ To reset the filter (start fresh):
 
 import argparse
 import json
+import shutil
 import time
 import sys
 from datetime import datetime
@@ -34,26 +37,59 @@ POLL_INTERVAL = 2.0   # seconds between folder scans
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}
 
 
-# ── Odometry loading ─────────────────────────────────────────────────────────
+# ── Observation cleaning ────────────────────────────────────────────────────
 
-def load_odometry(image_path: Path) -> float:
+def deduplicate_destinations_by_city(destinations: list[dict]) -> list[dict]:
     """
-    Look for a paired odometry JSON file next to the image.
-    e.g. images/testing01.png → images/testing01_odometry.json
-
-    Expected format:
-        {"image": "testing01.png", "distance_m": 1240}
-
-    Returns 0.0 if no odometry file is found.
+    When the same city appears multiple times (e.g. from two crops or two lines),
+    keep the reading with highest OCR confidence per city.
     """
-    odo_path = image_path.parent / (image_path.stem + "_odometry.json")
-    if not odo_path.exists():
-        return 0.0
-    with open(odo_path) as f:
-        data = json.load(f)
-    distance_m = float(data.get("distance_m", 0.0))
-    print(f"  Odometry: {distance_m:.0f} m since last image")
-    return distance_m
+    if not destinations:
+        return []
+    # Sort by confidence descending; first occurrence of each city wins
+    by_conf = sorted(destinations, key=lambda d: -d["ocr_confidence"])
+    seen = set()
+    out = []
+    for d in by_conf:
+        if d["city"] not in seen:
+            seen.add(d["city"])
+            out.append(d)
+    if len(out) < len(destinations):
+        print(f"  Deduplicated: {len(destinations)} → {len(out)} (by city)")
+    return out
+
+
+# ── Travel distance input ────────────────────────────────────────────────────
+
+def prompt_travel_distance(image_path: Path) -> float:
+    """
+    Ask user for travelled distance since previous processed image.
+    The value is used as odometry for the particle filter predict step.
+    """
+    prompt = f"  Distance since previous sign image before '{image_path.name}' (m): "
+    while True:
+        try:
+            raw = input(prompt).strip()
+        except EOFError:
+            print("  Input unavailable; defaulting distance to 0 m.")
+            return 0.0
+
+        if not raw:
+            print("  Please enter a number (e.g. 850).")
+            continue
+
+        try:
+            distance_m = float(raw)
+        except ValueError:
+            print("  Invalid number. Try again.")
+            continue
+
+        if distance_m < 0.0:
+            print("  Distance cannot be negative.")
+            continue
+
+        print(f"  Odometry: {distance_m:.0f} m since last image")
+        return distance_m
 
 
 # ── Processed image tracking ─────────────────────────────────────────────────
@@ -68,11 +104,23 @@ def save_processed(processed: set) -> None:
     with open(PROCESSED_LOG, "w") as f:
         json.dump(list(processed), f)
 
+def clear_directory_contents(path: Path) -> int:
+    """Delete all files and subdirectories in a directory; return removed count."""
+    removed = 0
+    for entry in path.iterdir():
+        if entry.is_dir():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+        removed += 1
+    return removed
+
 
 # ── Result saving ─────────────────────────────────────────────────────────────
 
 def save_result(image_name: str, observation: list[dict],
                 lat: float, lon: float, uncertainty_m: float,
+                map_lat: float, map_lon: float, map_uncertainty_m: float,
                 step: int) -> None:
     result = {
         "step":          step,
@@ -83,7 +131,12 @@ def save_result(image_name: str, observation: list[dict],
             "lat":           lat,
             "lon":           lon,
             "uncertainty_m": uncertainty_m,
-        }
+        },
+        "estimate_map": {
+            "lat":           map_lat,
+            "lon":           map_lon,
+            "uncertainty_m": map_uncertainty_m,
+        },
     }
     out_path = RESULTS_DIR / f"result_step{step:03d}_{Path(image_name).stem}.json"
     with open(out_path, "w", encoding="utf-8") as f:
@@ -94,7 +147,8 @@ def save_result(image_name: str, observation: list[dict],
         json.dump(result, f, indent=2, ensure_ascii=False)
 
     print(f"  Result saved → {out_path.name}")
-    print(f"  Coordinates: lat={lat:.6f}  lon={lon:.6f}  uncertainty≈{uncertainty_m:.0f}m")
+    print(f"  Coordinates (mean): lat={lat:.6f}  lon={lon:.6f}  uncertainty≈{uncertainty_m:.0f}m")
+    print(f"  Coordinates (MAP):  lat={map_lat:.6f}  lon={map_lon:.6f}  spread≈{map_uncertainty_m:.0f}m")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -108,7 +162,8 @@ def main():
     if args.reset:
         if PROCESSED_LOG.exists():
             PROCESSED_LOG.unlink()
-        print("Filter reset. Processed image log cleared.")
+        removed = clear_directory_contents(RESULTS_DIR)
+        print(f"Filter reset. Processed image log cleared, results cleared ({removed} item(s)).")
 
     # Lazy imports — heavy models only load when first needed
     print("Loading OCR and localization modules ...")
@@ -150,9 +205,10 @@ def main():
                     destinations = process_image(str(image_path))
                 except Exception as e:
                     print(f"  ERROR during OCR: {e}")
-                    processed.add(image_path.name)
-                    save_processed(processed)
+                    print("  Will retry this image on the next scan.")
                     continue
+
+                destinations = deduplicate_destinations_by_city(destinations)
 
                 if not destinations:
                     print("  No destinations found — skipping.")
@@ -160,8 +216,10 @@ def main():
                     save_processed(processed)
                     continue
 
-                # Step 2 — Odometry (only relevant after first observation)
-                distance_m = load_odometry(image_path)
+                # Step 2 — Travel distance (only relevant after first observation)
+                distance_m = 0.0
+                if pf.initialised:
+                    distance_m = prompt_travel_distance(image_path)
 
                 # Step 3 — Particle filter
                 try:
@@ -172,13 +230,18 @@ def main():
                         pf.update(destinations)
                 except Exception as e:
                     print(f"  ERROR during localisation: {e}")
-                    processed.add(image_path.name)
-                    save_processed(processed)
+                    print("  Will retry this image on the next scan.")
                     continue
 
                 # Step 4 — Save results
                 lat, lon, unc = pf.estimate()
-                save_result(image_path.name, destinations, lat, lon, unc, pf.step_index)
+                map_lat, map_lon, map_unc = pf.estimate_map()
+                save_result(
+                    image_path.name, destinations,
+                    lat, lon, unc,
+                    map_lat, map_lon, map_unc,
+                    pf.step_index
+                )
 
                 # Step 5 — Generate maps
                 try:

@@ -11,3 +11,4 @@ ultralytics
 easyocr
 rapidfuzz
 opencv-python
+pytesseract
