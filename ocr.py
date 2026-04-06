@@ -34,24 +34,17 @@ YOLO_MODEL_PATH = "minu_mudel_best.pt"   # path to your trained model
 # Reject OCR lines below this confidence (reduces garbage feeding the parser)
 MIN_OCR_CONFIDENCE = 0.25
 
-# Single source of truth: known destinations. OCR errors are corrected by fuzzy match only.
-ESTONIAN_PLACE_NAMES = [
-    "Tallinn", "Tartu", "Narva", "Pärnu", "Kohtla-Järve", "Viljandi",
-    "Rakvere", "Maardu", "Sillamäe", "Kuressaare", "Võru", "Valga", "Värska",
-    "Jõhvi", "Haapsalu", "Keila", "Paide", "Tapa", "Põlva", "Jõgeva",
-    "Saue", "Märjamaa", "Türi", "Elva", "Rapla", "Kärdla", "Kiviõli",
-    "Mustvee", "Kallaste", "Omedu", "Kanepi", "Otepää", "Antsla",
-    "Abja-Paluoja", "Suure-Jaani", "Kunda", "Püssi", "Paldiski",
-    "Luunja",
-]
+from place_names import ESTONIAN_PLACE_NAMES
 
 # Fuzzy match: correct OCR output to nearest known place. 65 allows single-char errors (e.g. Junja→Luunja).
 FUZZY_MATCH_THRESHOLD = 65
 ROW_TOLERANCE         = 1.5
 
-CITY_RE   = re.compile(r'^[A-ZÕÄÖÜ][a-zõäöüA-ZÕÄÖÜ\-]{1,}$')
-NUMBER_RE = re.compile(r'^\d{1,4}$')
-INLINE_RE = re.compile(r'([A-ZÕÄÖÜ][a-zõäöüA-ZÕÄÖÜ\-]{1,})\s+(\d{1,4})')
+CITY_RE    = re.compile(r'^[A-ZÕÄÖÜ][a-zõäöüA-ZÕÄÖÜ\-]{2,}$')   # 3+ chars minimum
+NUMBER_RE  = re.compile(r'^\d{1,4}$')
+INLINE_RE  = re.compile(r'([A-ZÕÄÖÜ][a-zõäöüA-ZÕÄÖÜ\-]{2,})\s+(\d{1,4})')
+# Matches European route codes like E263, E 265, e265 — these are road numbers, not distances
+E_ROUTE_RE = re.compile(r'\bE\s*(\d{2,4})\b', re.IGNORECASE)
 
 # ── Module-level singletons (loaded once) ─────────────────────────────────────
 
@@ -190,13 +183,23 @@ def fuzzy_correct_city(text: str) -> str:
     return match if score >= FUZZY_MATCH_THRESHOLD else text
 
 
+MIN_DISTANCE_KM = 5
+MAX_DISTANCE_KM = 400
+
 def _box_vertical_center(box) -> float:
     ys = [pt[1] for pt in box]
     return (min(ys) + max(ys)) / 2.0
 
+def _box_horizontal_center(box) -> float:
+    xs = [pt[0] for pt in box]
+    return (min(xs) + max(xs)) / 2.0
+
 def _box_height(box) -> float:
     ys = [pt[1] for pt in box]
     return max(ys) - min(ys)
+
+def _valid_distance(distance_km: int) -> bool:
+    return MIN_DISTANCE_KM <= distance_km <= MAX_DISTANCE_KM
 
 
 def parse_city_distances(hits: list[dict]) -> list[dict]:
@@ -206,16 +209,43 @@ def parse_city_distances(hits: list[dict]) -> list[dict]:
       Pass 2 — spatial : pair city and number by vertical alignment
       Pass 3 — sequential fallback
     """
+    # Collect all numbers that appear as European route codes (E263, E265, etc.)
+    # across the full set of hits so they are never mistaken for distances.
+    # Strategy 1: scan each hit individually.
+    # Strategy 2: scan joined text to catch "E" and "263" split across separate tokens.
+    # Strategy 3: if any hit is a lone "E"/"e" token, mark ALL 2-3 digit numbers as
+    #             route numbers (OCR sometimes drops the E leaving a bare digit string).
+    route_numbers: set[int] = set()
+    joined_text = " ".join(h['text'] for h in hits)
+    for m in E_ROUTE_RE.finditer(joined_text):
+        route_numbers.add(int(m.group(1)))
+    for hit in hits:
+        for m in E_ROUTE_RE.finditer(hit['text']):
+            route_numbers.add(int(m.group(1)))
+    # If a standalone "E"/"e" letter token is present (route marker without number),
+    # treat any 2–3 digit number in the crop as a route code, not a distance.
+    has_lone_e = any(h['text'].strip() in ('E', 'e') for h in hits)
+    if has_lone_e:
+        for hit in hits:
+            if re.match(r'^\d{2,3}$', hit['text'].strip()):
+                route_numbers.add(int(hit['text'].strip()))
+
+    def _valid_distance_not_route(n: int) -> bool:
+        return _valid_distance(n) and n not in route_numbers
+
     parsed      = []
     used_indices = set()
 
-    # Pass 1 — inline
+    # Pass 1 — inline: city and number on the same OCR line (city always left of number)
     for i, hit in enumerate(hits):
         for m in INLINE_RE.finditer(hit['text']):
+            distance_km = int(m.group(2))
+            if not _valid_distance_not_route(distance_km):
+                continue
             city = fuzzy_correct_city(m.group(1).strip().title())
             parsed.append({
                 'city': city,
-                'distance_km': int(m.group(2)),
+                'distance_km': distance_km,
                 'ocr_confidence': round(hit['conf'], 3)
             })
             used_indices.add(i)
@@ -229,34 +259,47 @@ def parse_city_distances(hits: list[dict]) -> list[dict]:
     if cities and numbers:
         paired = set()
         for ci, city_hit in cities:
-            cy = _box_vertical_center(city_hit['box'])
-            ch = _box_height(city_hit['box'])
+            cy  = _box_vertical_center(city_hit['box'])
+            ch  = _box_height(city_hit['box'])
+            cx  = _box_horizontal_center(city_hit['box'])
             best_dist, best_ni, best_num = float('inf'), None, None
             for ni, num_hit in numbers:
                 if ni in paired:
+                    continue
+                # Number must be to the right of the city (city name comes first)
+                if _box_horizontal_center(num_hit['box']) <= cx:
                     continue
                 diff = abs(cy - _box_vertical_center(num_hit['box']))
                 if diff < ch * ROW_TOLERANCE and diff < best_dist:
                     best_dist, best_ni, best_num = diff, ni, num_hit
             if best_num:
+                distance_km = int(best_num['text'])
+                if not _valid_distance_not_route(distance_km):
+                    continue
                 paired.add(best_ni)
                 used_indices.update([ci, best_ni])
                 city = fuzzy_correct_city(city_hit['text'].strip().title())
                 parsed.append({
                     'city': city,
-                    'distance_km': int(best_num['text']),
+                    'distance_km': distance_km,
                     'ocr_confidence': round((city_hit['conf'] + best_num['conf']) / 2, 3)
                 })
 
-    # Pass 3 — sequential fallback
+    # Pass 3 — sequential fallback: city token must appear before number token in
+    # the hits list (EasyOCR returns hits left-to-right, so earlier index = further left)
     remaining_after = [(i, h) for i, h in enumerate(hits) if i not in used_indices]
-    city_tokens     = [h for _, h in remaining_after if CITY_RE.match(h['text'])]
-    number_tokens   = [h for _, h in remaining_after if NUMBER_RE.match(h['text'])]
+    city_tokens     = [(i, h) for i, h in remaining_after if CITY_RE.match(h['text'])]
+    number_tokens   = [(i, h) for i, h in remaining_after if NUMBER_RE.match(h['text'])]
     if city_tokens and number_tokens:
-        for city_hit, num_hit in zip(city_tokens, number_tokens):
+        for (ci, city_hit), (ni, num_hit) in zip(city_tokens, number_tokens):
+            if ci >= ni:  # city must come before number in reading order
+                continue
+            distance_km = int(num_hit['text'])
+            if not _valid_distance_not_route(distance_km):
+                continue
             parsed.append({
                 'city': fuzzy_correct_city(city_hit['text'].strip().title()),
-                'distance_km': int(num_hit['text']),
+                'distance_km': distance_km,
                 'ocr_confidence': round((city_hit['conf'] + num_hit['conf']) / 2, 3)
             })
 
@@ -284,6 +327,7 @@ def process_image(image_path: str) -> list[dict]:
     all_destinations = []
     for i, crop in enumerate(crops):
         hits   = run_ocr(crop)
+        print(f"  Sign #{i+1} raw hits: {[(h['text'], round(h['conf'],2)) for h in hits]}")
         parsed = parse_city_distances(hits)
         print(f"  Sign #{i+1}: {[(p['city'], p['distance_km']) for p in parsed]}")
         all_destinations.extend(parsed)

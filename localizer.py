@@ -31,6 +31,12 @@ ox.settings.log_console = False
 CACHE_DIR           = Path("cache")
 GRAPH_FILE          = CACHE_DIR / "estonia_drive.pkl"
 
+HIGHWAY_TYPES = {
+    "motorway", "motorway_link",
+    "trunk",    "trunk_link",
+    "primary",  "primary_link",
+}
+
 N_PARTICLES           = 1000
 SCORE_SIGMA_M         = 2000   # base sigma (m); tune on validation (e.g. 1000–3000)
 EDGE_SAMPLE_SPACING_M = 50
@@ -38,7 +44,13 @@ RESAMPLE_THRESHOLD    = 0.5
 ROUGHENING_SIGMA_M    = 30
 # Observation model: low-confidence readings get wider sigma (less influence)
 CONFIDENCE_FLOOR      = 0.2    # avoid sigma_eff exploding for very low conf
-MIN_LIKELIHOOD        = 1e-6   # cap per-observation factor so one bad read doesn't kill weights
+MIN_LIKELIHOOD        = 1e-3   # cap per-observation factor so one bad read doesn't kill weights
+# Motion bias at junctions: prefer straight, discourage U-turns and tiny side roads.
+TURN_SIGMA_DEG        = 35.0   # sigma when heading is inferred from edge geometry
+HEADING_SIGMA_DEG     = 15.0   # tighter sigma when a measured heading is supplied
+UTURN_PENALTY         = 0.02
+REF_EDGE_LENGTH_M     = 80.0
+MIN_EDGE_LENGTH_BIAS  = 0.25
 
 rng = np.random.default_rng(42)
 
@@ -69,6 +81,37 @@ def load_graph(cache_path: Path = GRAPH_FILE) -> nx.MultiDiGraph:
         pickle.dump(G, f)
     print(f"  Saved to {cache_path}")
     return G
+
+
+def _highway_weight(edge_data: dict) -> float:
+    """
+    Motion-model preference weight for an edge based on its road type.
+    Particles strongly prefer motorway/trunk, moderately prefer primary,
+    and almost never take minor roads — but the full graph stays connected.
+    """
+    hw = edge_data.get("highway") or ""
+    tags = [hw] if isinstance(hw, str) else list(hw)
+    if any(t in {"motorway", "motorway_link", "trunk", "trunk_link"} for t in tags):
+        return 1.0
+    if any(t in {"primary", "primary_link"} for t in tags):
+        return 0.7
+    if any(t in {"secondary", "secondary_link"} for t in tags):
+        return 0.05
+    return 0.01
+
+
+def _is_highway_edge(hw_value) -> bool:
+    """Return True if an edge's highway attribute is a major road type."""
+    if hw_value is None:
+        return False
+    try:
+        import math
+        if math.isnan(float(hw_value)):
+            return False
+    except (TypeError, ValueError):
+        pass
+    tags = [hw_value] if isinstance(hw_value, str) else list(hw_value)
+    return any(t in HIGHWAY_TYPES for t in tags)
 
 
 # ── City distance service ─────────────────────────────────────────────────────
@@ -177,12 +220,21 @@ class ParticleFilter:
     def __init__(self, G: nx.MultiDiGraph, edges_gdf: gpd.GeoDataFrame,
                  city_svc: CityDistanceService):
         self.G          = G
-        self.edges_gdf  = edges_gdf
         self.city_svc   = city_svc
         self.particles: list[Particle] = []
         self.history:   list[dict]     = []
         self.step_index = 0
         self.initialised = False
+
+        # Pre-filter highway edges once at construction time — cheap on the
+        # full graph and avoids iterating 190k rows on every initialise() call.
+        print("Pre-filtering highway edges for initialisation ...")
+        t0 = time.time()
+        self._highway_edges = [
+            e for e in edges_gdf.itertuples()
+            if _is_highway_edge(getattr(e, 'highway', None))
+        ]
+        print(f"  {len(self._highway_edges):,} highway edges  ({time.time()-t0:.1f}s)")
 
     def initialise(self, observation: list[dict]) -> None:
         print("\n[Filter] Initialising ...")
@@ -198,8 +250,7 @@ class ParticleFilter:
         pool_us,   pool_vs   = [], []
         pool_ts, pool_scores = [], []
 
-        edges_list = list(self.edges_gdf.itertuples())
-        for edge in tqdm(edges_list, desc="Sampling edges"):
+        for edge in tqdm(self._highway_edges, desc="Sampling highway edges"):
             u, v  = edge.Index[0], edge.Index[1]
             geom  = edge.geometry
             if geom is None or geom.is_empty:
@@ -266,30 +317,50 @@ class ParticleFilter:
         map_lat, map_lon, map_unc = self.estimate_map()
         print(f"  Initial estimate: ({lat:.5f}, {lon:.5f})  uncertainty ≈ {unc:.0f} m")
         print(f"  Initial MAP:      ({map_lat:.5f}, {map_lon:.5f})  spread ≈ {map_unc:.0f} m")
+        if unc > 30_000:
+            print(f"  WARNING: initial uncertainty too high ({unc:.0f} m) — "
+                  f"observation likely contains a misread (e.g. route code as distance). "
+                  f"Rejecting this initialisation; waiting for a better sign.")
+            self.particles  = []
+            self.history    = []
+            self.step_index = 0
+            self.initialised = False
 
-    def predict(self, delta_distance_m: float = 0.0) -> None:
+    def predict(self, delta_distance_m: float = 0.0,
+                heading_deg: Optional[float] = None) -> None:
         """
         Propagate each particle forward along the road network by
         delta_distance_m metres (plus Gaussian noise for odometry error).
 
-        At each junction the particle picks a random outgoing edge,
-        simulating unknown turn decisions between sign observations.
+        At each junction the particle picks an outgoing edge using a simple
+        transition bias: prefer continuing direction, penalise immediate
+        U-turns, and penalise very short side-road edges.
+
+        heading_deg — optional compass bearing (0 = North, 90 = East, clockwise).
+        When supplied, junction selection uses the measured heading with a
+        tighter sigma instead of inferring direction from edge geometry.
         """
         if delta_distance_m <= 0.0:
             return
 
-        print(f"\n[Filter] Predict — advancing particles {delta_distance_m:.0f} m ...")
+        # Convert compass bearing to math angle (East=0, CCW) used by atan2
+        measured_heading_rad: Optional[float] = None
+        if heading_deg is not None:
+            measured_heading_rad = np.radians(90.0 - heading_deg)
+
+        heading_str = f"  heading {heading_deg:.0f}°" if heading_deg is not None else ""
+        print(f"\n[Filter] Predict — advancing particles {delta_distance_m:.0f} m{heading_str} ...")
 
         # Odometry noise: 5% of distance travelled, minimum 10 m
         noise_std_m = max(10.0, delta_distance_m * 0.05)
 
-        # Pre-build adjacency for fast junction lookup
+        # Pre-build adjacency for fast junction lookup (include data for road-type weighting)
         adj = {}
         for u, v, key, data in self.G.edges(keys=True, data=True):
             length = data.get("length", 1.0)
             if u not in adj:
                 adj[u] = []
-            adj[u].append((v, length, data.get("geometry")))
+            adj[u].append((v, length, data.get("geometry"), data))
 
         new_particles = []
         for p in self.particles:
@@ -314,12 +385,14 @@ class ParticleFilter:
                     travel = 0.0
                 else:
                     travel   -= remaining
+                    prev_u    = cur_u
                     cur_u     = cur_v
                     cur_t     = 0.0
                     neighbors = adj.get(cur_u, [])
                     if not neighbors:
                         break
-                    nv, nlen, _ = neighbors[rng.integers(len(neighbors))]
+                    nv, nlen = self._choose_next_edge(prev_u, cur_u, neighbors,
+                                                        measured_heading_rad)
                     cur_v     = nv
                     cur_len   = nlen
                     remaining = cur_len
@@ -350,6 +423,61 @@ class ParticleFilter:
         self.particles = new_particles
         print(f"  Particles propagated.")
 
+    @staticmethod
+    def _angle_diff_rad(a: float, b: float) -> float:
+        d = (a - b + np.pi) % (2 * np.pi) - np.pi
+        return abs(d)
+
+    def _choose_next_edge(self, prev_u: int, cur_u: int,
+                          neighbors: list[tuple[int, float, Optional[object], dict]],
+                          measured_heading_rad: Optional[float] = None) -> tuple[int, float]:
+        """Sample next edge using heading continuity + U-turn + short-edge + road-type biases.
+
+        measured_heading_rad — if supplied (already in math-angle radians), use it
+        directly with HEADING_SIGMA_DEG instead of inferring from edge geometry.
+        """
+        node_cur = self.G.nodes.get(cur_u)
+        if node_cur is None:
+            nv, nlen, _, _ = neighbors[rng.integers(len(neighbors))]
+            return nv, nlen
+
+        if measured_heading_rad is not None:
+            in_heading = measured_heading_rad
+            sigma_rad  = np.radians(HEADING_SIGMA_DEG)
+        else:
+            node_prev = self.G.nodes.get(prev_u)
+            if node_prev is None:
+                nv, nlen, _, _ = neighbors[rng.integers(len(neighbors))]
+                return nv, nlen
+            in_heading = np.arctan2(node_cur["y"] - node_prev["y"],
+                                    node_cur["x"] - node_prev["x"])
+            sigma_rad  = np.radians(TURN_SIGMA_DEG)
+
+        scores = []
+        for nv, nlen, _, edge_data in neighbors:
+            node_next = self.G.nodes.get(nv)
+            if node_next is None:
+                scores.append(0.0)
+                continue
+
+            out_heading = np.arctan2(node_next["y"] - node_cur["y"], node_next["x"] - node_cur["x"])
+            turn    = self._angle_diff_rad(out_heading, in_heading)
+            w_dir   = np.exp(-0.5 * (turn / max(sigma_rad, 1e-6)) ** 2)
+            w_uturn = UTURN_PENALTY if nv == prev_u else 1.0
+            w_len   = np.clip(nlen / max(REF_EDGE_LENGTH_M, 1.0), MIN_EDGE_LENGTH_BIAS, 1.0)
+            w_road  = _highway_weight(edge_data)
+            scores.append(float(w_dir * w_uturn * w_len * w_road))
+
+        total = float(np.sum(scores))
+        if total <= 1e-12:
+            nv, nlen, _, _ = neighbors[rng.integers(len(neighbors))]
+            return nv, nlen
+
+        probs = np.array(scores, dtype=float) / total
+        idx = int(rng.choice(len(neighbors), p=probs))
+        nv, nlen, _, _ = neighbors[idx]
+        return nv, nlen
+
     def update(self, observation: list[dict]) -> None:
         target_step = self.step_index + 1
         print(f"\n[Filter] Update #{target_step} ...")
@@ -370,6 +498,20 @@ class ParticleFilter:
             return
 
         new_weights /= total_w
+
+        # Sanity check: reject observation if weighted mean would jump > 100 km.
+        # This guards against bad OCR readings that would teleport all particles.
+        cur_lat, cur_lon, _ = self.estimate()
+        new_lat = float(np.average([p.lat for p in self.particles], weights=new_weights))
+        new_lon = float(np.average([p.lon for p in self.particles], weights=new_weights))
+        jump_m = 111_320 * np.sqrt(
+            (new_lat - cur_lat) ** 2 +
+            ((new_lon - cur_lon) * np.cos(np.radians(cur_lat))) ** 2
+        )
+        if jump_m > 100_000:
+            print(f"  WARNING: observation would cause {jump_m/1000:.0f} km jump — rejected")
+            return
+
         for p, w in zip(self.particles, new_weights):
             p.weight = w
 
@@ -484,7 +626,7 @@ def plot_particle_map(pf: ParticleFilter, G: nx.MultiDiGraph,
                       margin: float = 0.15,
                       figsize: tuple = (14, 10)) -> None:
     final   = pf.history[-1]
-    est     = final["estimate"]
+    est     = final["estimate_map"]
     parts   = final["particles"]
     weights = np.array([p.weight for p in parts])
     max_w   = weights.max()
@@ -494,7 +636,7 @@ def plot_particle_map(pf: ParticleFilter, G: nx.MultiDiGraph,
     lon_min = lons.min() - margin;  lon_max = lons.max() + margin
     lat_min = lats.min() - margin;  lat_max = lats.max() + margin
     for snap in pf.history:
-        e = snap["estimate"]
+        e = snap["estimate_map"]
         lon_min = min(lon_min, e["lon"] - margin)
         lon_max = max(lon_max, e["lon"] + margin)
         lat_min = min(lat_min, e["lat"] - margin)
@@ -505,24 +647,41 @@ def plot_particle_map(pf: ParticleFilter, G: nx.MultiDiGraph,
              f"({est['lat']:.4f}, {est['lon']:.4f})  |  "
              f"uncertainty ≈ {est['uncertainty_m']:.0f} m")
 
+    # Reference cities shown on every map for orientation
+    REFERENCE_CITIES = {
+        "Tallinn": (59.4370, 24.7536),
+        "Tartu":   (58.3780, 26.7290),
+        "Pärnu":   (58.3859, 24.4971),
+        "Narva":   (59.3772, 28.1910),
+        "Viljandi":(58.3639, 25.5897),
+        "Rakvere": (59.3469, 26.3551),
+        "Paide":   (58.8858, 25.5572),
+    }
+
     def _overlay(ax):
         ax.scatter(lons, lats, c=weights/max_w, cmap='plasma',
                    s=12, alpha=0.7, zorder=3, linewidths=0)
-        for snap in pf.history:
-            e = snap["estimate"]
-            ax.scatter(e["lon"], e["lat"], s=100, color='cyan',
-                       marker='+', linewidths=2.5, zorder=5)
         if len(pf.history) > 1:
-            ax.plot([s["estimate"]["lon"] for s in pf.history],
-                    [s["estimate"]["lat"] for s in pf.history],
+            ax.plot([s["estimate_map"]["lon"] for s in pf.history],
+                    [s["estimate_map"]["lat"] for s in pf.history],
                     color='cyan', linewidth=1.5, alpha=0.7, zorder=4)
+        # Current position cross (latest only)
+        ax.scatter(est["lon"], est["lat"], s=120, color='cyan',
+                   marker='+', linewidths=2.5, zorder=6)
         for j, det in enumerate(final["observation"]):
-            nd = G.nodes[city_svc.origin_node(det["city"])]
-            ax.scatter(nd['x'], nd['y'], s=80, color=tab10[j % 4],
+            geocode = city_svc.geocode(det["city"])  # (lat, lon)
+            ax.scatter(geocode[1], geocode[0], s=80, color=tab10[j % 4],
                        marker='D', zorder=5, edgecolors='white', linewidths=0.5)
-            ax.annotate(det["city"], (nd['x'], nd['y']),
+            ax.annotate(det["city"], (geocode[1], geocode[0]),
                         xytext=(5, 5), textcoords='offset points',
                         fontsize=8, color=tab10[j % 4], fontweight='bold')
+        # Fixed reference city markers for orientation
+        for city, (rlat, rlon) in REFERENCE_CITIES.items():
+            ax.scatter(rlon, rlat, s=40, color='white', marker='o',
+                       alpha=0.5, zorder=4, linewidths=0)
+            ax.annotate(city, (rlon, rlat), xytext=(3, 3),
+                        textcoords='offset points', fontsize=7,
+                        color='white', alpha=0.6)
 
     # Full map
     fig1, ax1 = ox.plot_graph(G, show=False, close=False, bgcolor='#0e1117',
@@ -549,3 +708,60 @@ def plot_particle_map(pf: ParticleFilter, G: nx.MultiDiGraph,
     plt.close()
 
     print(f"  Maps saved → {p1.name}, {p2.name}")
+
+
+def plot_latest_map(pf: ParticleFilter, G: nx.MultiDiGraph,
+                    city_svc: CityDistanceService,
+                    output_dir: Path = Path("results"),
+                    zoom: float = 0.08,
+                    figsize: tuple = (10, 7)) -> None:
+    """
+    Lightweight zoomed map updated on every frame (including predict-only steps).
+    Always saved as latest_map.png — overwrites each time.
+    """
+    if not pf.history:
+        return
+
+    est    = pf.history[-1]["estimate_map"]
+    parts  = pf.history[-1]["particles"]
+    weights = np.array([p.weight for p in parts])
+    max_w  = weights.max() if weights.max() > 0 else 1.0
+    lons   = np.array([p.lon for p in parts])
+    lats   = np.array([p.lat for p in parts])
+
+    lat_min = est["lat"] - zoom;  lat_max = est["lat"] + zoom
+    lon_min = est["lon"] - zoom;  lon_max = est["lon"] + zoom
+
+    title = (f"Step {pf.step_index}  |  "
+             f"({est['lat']:.4f}, {est['lon']:.4f})  |  "
+             f"spread ≈ {est['uncertainty_m']:.0f} m")
+
+    bbox = (lat_max, lat_min, lon_max, lon_min)
+    fig, ax = ox.plot_graph(G, show=False, close=False, bbox=bbox,
+                            bgcolor='#0e1117', node_size=0,
+                            edge_color='#333844', edge_linewidth=0.8,
+                            figsize=figsize)
+
+    # Particles
+    mask = (lons >= lon_min) & (lons <= lon_max) & (lats >= lat_min) & (lats <= lat_max)
+    if mask.any():
+        ax.scatter(lons[mask], lats[mask], c=(weights/max_w)[mask],
+                   cmap='plasma', s=10, alpha=0.7, zorder=3, linewidths=0)
+
+    # Trail
+    if len(pf.history) > 1:
+        ax.plot([s["estimate_map"]["lon"] for s in pf.history],
+                [s["estimate_map"]["lat"] for s in pf.history],
+                color='cyan', linewidth=1.5, alpha=0.7, zorder=4)
+
+    # Current position cross
+    ax.scatter(est["lon"], est["lat"], s=120, color='cyan',
+               marker='+', linewidths=2.5, zorder=6)
+
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    ax.set_title("Latest — " + title, color='white', fontsize=9)
+
+    out = output_dir / "latest_map.png"
+    plt.savefig(out, dpi=120, bbox_inches='tight', facecolor='#0e1117')
+    plt.close()

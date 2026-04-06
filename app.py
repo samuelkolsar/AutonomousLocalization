@@ -62,10 +62,7 @@ def deduplicate_destinations_by_city(destinations: list[dict]) -> list[dict]:
 # ── Travel distance input ────────────────────────────────────────────────────
 
 def prompt_travel_distance(image_path: Path) -> float:
-    """
-    Ask user for travelled distance since previous processed image.
-    The value is used as odometry for the particle filter predict step.
-    """
+    """Ask user for travelled distance since previous processed image."""
     prompt = f"  Distance since previous sign image before '{image_path.name}' (m): "
     while True:
         try:
@@ -90,6 +87,34 @@ def prompt_travel_distance(image_path: Path) -> float:
 
         print(f"  Odometry: {distance_m:.0f} m since last image")
         return distance_m
+
+
+def prompt_heading() -> float | None:
+    """
+    Ask user for compass bearing (0 = North, 90 = East, clockwise).
+    Returns None if skipped — filter falls back to edge-geometry inference.
+    """
+    while True:
+        try:
+            raw = input("  Heading / compass bearing (0–360°, or Enter to skip): ").strip()
+        except EOFError:
+            return None
+
+        if not raw:
+            return None
+
+        try:
+            heading = float(raw)
+        except ValueError:
+            print("  Invalid number. Try again or press Enter to skip.")
+            continue
+
+        if not (0.0 <= heading < 360.0):
+            print("  Bearing must be between 0 and 360.")
+            continue
+
+        print(f"  Heading: {heading:.0f}°")
+        return heading
 
 
 # ── Processed image tracking ─────────────────────────────────────────────────
@@ -118,37 +143,47 @@ def clear_directory_contents(path: Path) -> int:
 
 # ── Result saving ─────────────────────────────────────────────────────────────
 
+_obs_count = 0   # module-level counter for observation saves
+
+
 def save_result(image_name: str, observation: list[dict],
-                lat: float, lon: float, uncertainty_m: float,
                 map_lat: float, map_lon: float, map_uncertainty_m: float,
+                mean_lat: float, mean_lon: float, mean_uncertainty_m: float,
                 step: int) -> None:
+    global _obs_count
+    # MAP estimate (best particle) is primary — always on a road.
+    # Weighted mean is secondary — can fall off-road between clusters.
     result = {
-        "step":          step,
+        "filter_step":   step,
         "timestamp":     datetime.now().isoformat(),
         "image":         image_name,
         "observation":   observation,
         "estimate": {
-            "lat":           lat,
-            "lon":           lon,
-            "uncertainty_m": uncertainty_m,
-        },
-        "estimate_map": {
             "lat":           map_lat,
             "lon":           map_lon,
             "uncertainty_m": map_uncertainty_m,
         },
+        "estimate_mean": {
+            "lat":           mean_lat,
+            "lon":           mean_lon,
+            "uncertainty_m": mean_uncertainty_m,
+        },
     }
-    out_path = RESULTS_DIR / f"result_step{step:03d}_{Path(image_name).stem}.json"
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2, ensure_ascii=False)
 
-    # Also overwrite a single "latest.json" for easy external reading
+    # Always update latest.json (current live position)
     with open(RESULTS_DIR / "latest.json", "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
-    print(f"  Result saved → {out_path.name}")
-    print(f"  Coordinates (mean): lat={lat:.6f}  lon={lon:.6f}  uncertainty≈{uncertainty_m:.0f}m")
     print(f"  Coordinates (MAP):  lat={map_lat:.6f}  lon={map_lon:.6f}  spread≈{map_uncertainty_m:.0f}m")
+    print(f"  Coordinates (mean): lat={mean_lat:.6f}  lon={mean_lon:.6f}  uncertainty≈{mean_uncertainty_m:.0f}m")
+
+    # Only save a numbered file when a sign observation was used
+    if observation:
+        _obs_count += 1
+        out_path = RESULTS_DIR / f"obs{_obs_count:04d}_{Path(image_name).stem}.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        print(f"  Observation #{_obs_count} saved → {out_path.name}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -160,6 +195,8 @@ def main():
     args = parser.parse_args()
 
     if args.reset:
+        global _obs_count
+        _obs_count = 0
         if PROCESSED_LOG.exists():
             PROCESSED_LOG.unlink()
         removed = clear_directory_contents(RESULTS_DIR)
@@ -172,10 +209,9 @@ def main():
     import osmnx as ox
 
     print("Loading road graph ...")
-    G               = load_graph()
-    G_undirected    = G.to_undirected()
-    _, edges_gdf    = ox.graph_to_gdfs(G)
-    city_svc        = CityDistanceService(G)
+    G            = load_graph()
+    _, edges_gdf = ox.graph_to_gdfs(G)
+    city_svc     = CityDistanceService(G)
 
     pf        = ParticleFilter(G, edges_gdf, city_svc)
     processed = load_processed()
@@ -211,35 +247,66 @@ def main():
                 destinations = deduplicate_destinations_by_city(destinations)
 
                 if not destinations:
-                    print("  No destinations found — skipping.")
+                    if not pf.initialised:
+                        print("  No destinations found and filter not initialised — skipping.")
+                        processed.add(image_path.name)
+                        save_processed(processed)
+                        continue
+
+                    # Predict-only: advance particles without an observation update
+                    print("  No sign detected — running predict-only step.")
+                    distance_m = prompt_travel_distance(image_path)
+                    heading    = prompt_heading()
+                    try:
+                        pf.predict(delta_distance_m=distance_m, heading_deg=heading)
+                        pf.step_index += 1
+                        pf._save_snapshot(f"predict_{pf.step_index}", [])
+                    except Exception as e:
+                        print(f"  ERROR during predict: {e}")
+                        print("  Will retry this image on the next scan.")
+                        continue
+
+                    map_lat, map_lon, map_unc = pf.estimate_map()
+                    mean_lat, mean_lon, mean_unc = pf.estimate()
+                    save_result(image_path.name, [],
+                                map_lat, map_lon, map_unc,
+                                mean_lat, mean_lon, mean_unc, pf.step_index)
                     processed.add(image_path.name)
                     save_processed(processed)
                     continue
 
-                # Step 2 — Travel distance (only relevant after first observation)
+                # Step 2 — Travel distance + heading (only relevant after first observation)
                 distance_m = 0.0
+                heading    = None
                 if pf.initialised:
                     distance_m = prompt_travel_distance(image_path)
+                    heading    = prompt_heading()
 
                 # Step 3 — Particle filter
                 try:
                     if not pf.initialised:
                         pf.initialise(destinations)
                     else:
-                        pf.predict(delta_distance_m=distance_m)
+                        pf.predict(delta_distance_m=distance_m, heading_deg=heading)
                         pf.update(destinations)
                 except Exception as e:
                     print(f"  ERROR during localisation: {e}")
                     print("  Will retry this image on the next scan.")
                     continue
 
+                # If initialisation was rejected (bad observation), skip and retry.
+                if not pf.initialised:
+                    processed.add(image_path.name)
+                    save_processed(processed)
+                    continue
+
                 # Step 4 — Save results
-                lat, lon, unc = pf.estimate()
                 map_lat, map_lon, map_unc = pf.estimate_map()
+                mean_lat, mean_lon, mean_unc = pf.estimate()
                 save_result(
                     image_path.name, destinations,
-                    lat, lon, unc,
                     map_lat, map_lon, map_unc,
+                    mean_lat, mean_lon, mean_unc,
                     pf.step_index
                 )
 
