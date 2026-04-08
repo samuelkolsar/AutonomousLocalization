@@ -36,8 +36,7 @@ ROS1 .bag file
 ## Setup
 
 ```bash
-pip install ultralytics easyocr rapidfuzz osmnx networkx geopandas \
-            shapely matplotlib tqdm rosbags bagpy pandas opencv-python
+pip install -r requirements.txt
 ```
 
 Place your trained YOLO weights (`sign_detector.pt`) in the project root.

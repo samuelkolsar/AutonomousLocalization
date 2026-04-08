@@ -6,9 +6,10 @@ scipy
 matplotlib
 numpy
 tqdm
-folium
 ultralytics
 easyocr
 rapidfuzz
 opencv-python
-pytesseract
+rosbags
+bagpy
+pandas
