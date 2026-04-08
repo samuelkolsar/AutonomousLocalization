@@ -1,0 +1,27 @@
+# Claude Code
+.claude/
+
+# Output directories
+images/
+results/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Cached graph and city distances
+cache/
+
+# YOLO model weights (large binary)
+*.pt
+*.pth
+
+# Bagpy CSV export cache
+*.bag_data/
+
+# Common IDE / OS files
+.venv/
+*.egg-info/
+.DS_Store
+Thumbs.db

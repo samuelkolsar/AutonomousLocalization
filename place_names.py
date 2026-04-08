@@ -1,16 +1,15 @@
 """
-place_names.py — Estonian settlement names for OCR fuzzy matching.
+place_names.py — List of Estonian settlement names for OCR fuzzy matching.
 
-Covers cities, towns, and villages that appear on Estonian road signs.
-Used by ocr.py for fuzzy-correcting OCR output to known place names.
+Used by ocr.py to correct misread sign text to the nearest known place name.
 """
 
-ESTONIAN_PLACE_NAMES = [
-    # ── Major cities ──────────────────────────────────────────────────────────
+ESTONIAN_PLACE_NAMES = list(dict.fromkeys([
+    # Major cities
     "Tallinn", "Tartu", "Narva", "Pärnu", "Kohtla-Järve", "Viljandi",
     "Rakvere", "Maardu", "Sillamäe", "Kuressaare",
 
-    # ── Towns (5 000–10 000) ──────────────────────────────────────────────────
+    # Towns
     "Võru", "Valga", "Jõhvi", "Haapsalu", "Keila", "Paide", "Tapa",
     "Põlva", "Jõgeva", "Saue", "Märjamaa", "Türi", "Elva", "Rapla",
     "Kärdla", "Kiviõli", "Mustvee", "Kallaste", "Põltsamaa", "Kunda",
@@ -18,60 +17,40 @@ ESTONIAN_PLACE_NAMES = [
     "Tõrva", "Võhma", "Sindi", "Kilingi-Nõmme", "Karksi-Nuia",
     "Abja-Paluoja", "Suure-Jaani", "Püssi",
 
-    # ── Tallinn–Narva corridor (E20) ──────────────────────────────────────────
+    # Tallinn–Narva corridor (E20)
     "Aegviidu", "Aravete", "Ambla", "Järva-Jaani", "Mäo",
     "Kadrina", "Haljala", "Vinni", "Iisaku", "Aseri",
 
-    # ── Tallinn–Tartu corridor ────────────────────────────────────────────────
-    "Kose", "Ardu", "Arisvere", "Imavere", "Laeva",
+    # Tallinn–Tartu corridor
+    "Ardu", "Arisvere", "Imavere", "Laeva",
     "Tabivere", "Ülenurme", "Nõo", "Ropka",
 
-    # ── Tallinn–Pärnu corridor ────────────────────────────────────────────────
+    # Tallinn–Pärnu corridor
     "Laagri", "Saku", "Kohila", "Kehtna", "Lihula",
     "Tori", "Pärnu-Jaagupi", "Are", "Vändra",
 
-    # ── Around Tallinn ────────────────────────────────────────────────────────
-    "Saue", "Keila", "Paldiski", "Loksa", "Kuusalu",
-    "Maardu", "Jüri", "Rae", "Saku", "Harkujärve",
+    # Around Tallinn
+    "Loksa", "Kuusalu", "Jüri", "Rae", "Harkujärve",
     "Tabasalu", "Viimsi", "Pirita",
 
-    # ── West Estonia / islands ────────────────────────────────────────────────
-    "Haapsalu", "Taebla", "Märjamaa", "Lihula", "Virtsu",
-    "Kärdla", "Emmaste", "Kõrgessaare",
-    "Kuressaare", "Orissaare", "Leisi", "Mustjala", "Muhu",
+    # West Estonia and islands
+    "Taebla", "Virtsu", "Emmaste", "Kõrgessaare",
+    "Orissaare", "Leisi", "Mustjala", "Muhu",
 
-    # ── South Estonia ─────────────────────────────────────────────────────────
-    "Võru", "Antsla", "Võhandu", "Rõuge", "Mõniste",
-    "Valga", "Taheva", "Sangaste", "Tõrva", "Helme",
-    "Põlva", "Räpina", "Värska", "Võnnu",
-    "Otepää", "Puka", "Rõngu", "Elva", "Nõo",
-    "Kanepi", "Põlva",
+    # South Estonia
+    "Võhandu", "Rõuge", "Mõniste", "Luhamaa",
+    "Taheva", "Sangaste", "Helme",
+    "Räpina", "Võnnu", "Puka", "Rõngu",
 
-    # ── Central Estonia ───────────────────────────────────────────────────────
-    "Paide", "Türi", "Järva-Jaani", "Ambla", "Albu",
-    "Imavere", "Võhma", "Suure-Jaani", "Kõpu",
-    "Viljandi", "Abja-Paluoja", "Halliste", "Karksi-Nuia",
-    "Põltsamaa", "Jõgeva", "Palamuse", "Tabivere",
+    # Central Estonia
+    "Albu", "Kõpu", "Halliste", "Palamuse",
 
-    # ── East Estonia ──────────────────────────────────────────────────────────
-    "Jõhvi", "Kohtla-Järve", "Sillamäe", "Narva", "Kiviõli",
-    "Kunda", "Rakvere", "Tapa", "Iisaku", "Avinurme",
-    "Mustvee", "Kallaste", "Alajõe",
+    # East Estonia
+    "Avinurme", "Alajõe",
 
-    # ── North coast ───────────────────────────────────────────────────────────
-    "Loksa", "Kuusalu", "Haljala", "Vihula", "Käsmu",
-    "Võsu", "Kunda",
+    # North coast
+    "Vihula", "Käsmu", "Võsu",
 
-    # ── Pärnu region ─────────────────────────────────────────────────────────
-    "Pärnu", "Sindi", "Tori", "Vändra", "Are",
-    "Kilingi-Nõmme", "Mõisaküla", "Lavassaare",
-]
-
-# Deduplicate while preserving order
-_seen = set()
-_deduped = []
-for _name in ESTONIAN_PLACE_NAMES:
-    if _name not in _seen:
-        _seen.add(_name)
-        _deduped.append(_name)
-ESTONIAN_PLACE_NAMES = _deduped
+    # Pärnu region
+    "Mõisaküla", "Lavassaare",
+]))

@@ -1,61 +1,77 @@
-# Road Sign Localization — Pipeline Application
+# Autonomous Localisation via Road Sign OCR
 
-## Structure
+GPS-free vehicle localisation on the Estonian road network. A particle filter
+estimates the vehicle's position by matching road sign distance readings
+(e.g. "TARTU 82 km") against precomputed Dijkstra distances from city centres
+to every node in the OSM road graph. Odometry and compass heading from a
+NovAtel INSPVA unit propagate the particles between sign observations.
+
+## Pipeline
 
 ```
-pipeline/
-├── app.py          ← main loop, run this
-├── ocr.py          ← YOLO detection + EasyOCR + parsing
-├── localizer.py    ← particle filter + visualisation
-├── images/         ← DROP YOUR IMAGES HERE
-├── results/        ← coordinates JSON + map PNGs written here
-└── cache/          ← road graph + Dijkstra cache (auto-managed)
+ROS1 .bag file
+      │
+      ├── Camera frames ──► YOLO detection ──► EasyOCR ──► city + distance pairs
+      │                                                              │
+      └── INSPVA telemetry ──► speed + heading                      │
+                                    │                               │
+                                    ▼                               ▼
+                              Predict step                    Update step
+                         (move particles along          (reweight particles by
+                          road network)                  distance likelihood)
+                                    │
+                                    ▼
+                          results/latest.json + map PNGs
 ```
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `bag_replay.py` | Main script — replays a ROS1 bag through the pipeline |
+| `ocr.py` | YOLO sign detection + EasyOCR + city/distance parsing |
+| `localizer.py` | Particle filter, city distance service, visualisation |
+| `place_names.py` | List of Estonian place names for OCR fuzzy correction |
 
 ## Setup
 
 ```bash
-pip install ultralytics easyocr rapidfuzz osmnx networkx geopandas shapely scipy matplotlib tqdm
+pip install ultralytics easyocr rapidfuzz osmnx networkx geopandas \
+            shapely matplotlib tqdm rosbags bagpy pandas opencv-python
 ```
 
-Make sure `minu_mudel_best.pt` (your trained YOLO model) is in the same folder as `app.py`.
+Place your trained YOLO weights (`sign_detector.pt`) in the project root.
+
+The Estonia road graph is downloaded from OpenStreetMap automatically on first
+run and cached to `cache/estonia_drive.pkl` (~5–15 minutes, one-time).
+City Dijkstra distances are also cached per city in `cache/`.
 
 ## Running
 
 ```bash
-python app.py
+python bag_replay.py path/to/recording.bag
 ```
 
-Then drop images into the `images/` folder. Each new image is automatically:
-1. Detected + OCR'd for city/distance pairs
-2. Fed into the particle filter
-3. Saved as `results/result_stepNNN_<image>.json` + two map PNGs
-
-The filter maintains state across images — the more images you feed in,
-the more the particle cloud converges.
-
-## Resetting the filter
+Optional arguments:
 
 ```bash
-python app.py --reset
+python bag_replay.py recording.bag --reset           # clear previous results first
+python bag_replay.py recording.bag --camera /topic   # specify camera topic
 ```
 
-Clears the processed image log so everything starts fresh.
+Press **Ctrl+C** at any time to stop — evaluation plots are generated from
+whatever data was collected up to that point.
 
 ## Output
 
-Every processed image produces:
-- `results/result_stepNNN_<name>.json` — coordinates + observation + uncertainty
-- `results/latest.json` — always the most recent result (easy to poll externally)
-- `results/map_full_stepN.png` — full Estonia road map with particle cloud
-- `results/map_zoomed_stepN.png` — zoomed view around the particle cluster
+All output is written to `results/`:
 
-## Adding odometry
-
-In `localizer.py`, find the `predict()` method in `ParticleFilter`.
-The stub is there with instructions. When you have odometry data,
-pass it in `app.py` here:
-
-```python
-pf.predict(delta_distance_m=500, delta_heading_deg=0)
-```
+| File | Description |
+|---|---|
+| `latest.json` | Most recent position estimate (updated every step) |
+| `latest_map.png` | Live zoomed particle map (updated every step) |
+| `obs####_frame####.json` | Full result at each sign observation |
+| `map_full_stepN.png` | Full Estonia map with particle cloud |
+| `map_zoomed_stepN.png` | Zoomed view around the particle cluster |
+| `error_plot.png` | Position error vs distance travelled (vs GPS ground truth) |
+| `gps_map.png` | GPS track vs particle filter track overlay |
