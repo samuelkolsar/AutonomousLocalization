@@ -13,12 +13,12 @@ ROS1 .bag file
       │
       ├── Camera frames ──► YOLO detection ──► EasyOCR ──► city + distance pairs
       │                                                              │
-      └── INSPVA telemetry ──► speed + heading                      │
-                                    │                               │
-                                    ▼                               ▼
-                              Predict step                    Update step
-                         (move particles along          (reweight particles by
-                          road network)                  distance likelihood)
+      └── INSPVA telemetry ──► speed + heading                       │
+                                    │                                │
+                                    ▼                                ▼
+                              Predict step                     Update step
+                         (move particles along           (reweight particles by
+                          road network)                   distance likelihood)
                                     │
                                     ▼
                           results/latest.json + map PNGs
