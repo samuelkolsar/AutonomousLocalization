@@ -766,6 +766,8 @@ class ParticleFilter:
         Weighted-mean predicted road distance (km) from the particle
         distribution to a city. Used for single-city observation validation.
         """
+        if not self.city_svc.load(city):
+            return None
         weights = np.array([p.weight for p in self.particles])
         dists = []
         for p in self.particles:

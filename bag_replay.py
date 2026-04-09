@@ -149,89 +149,97 @@ def _haversine_m(lat1, lon1, lat2, lon2):
 
 def generate_evaluation(track: list[dict], G, output_dir: Path) -> None:
     """
-    Generate two evaluation outputs from ground-truth GPS vs predictions:
-      1. error_plot.png  -- position error vs distance travelled
-      2. gps_map.png     -- GPS track overlaid with particle filter track
+    Generate two evaluation outputs:
+      1. evaluation.png  -- predicted track and GPS track side by side on road graph
+      2. error_plot.png  -- position error % vs distance travelled
     """
     import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
     import osmnx as ox
 
     if not track:
         print("  No evaluation data.")
         return
 
-    # Compute errors and cumulative distance
-    cum_dist, errors, obs_dists = [], [], []
-    d_acc = 0.0
-    for row in track:
-        d_acc += row["dist_m"]
-        cum_dist.append(d_acc)
-        errors.append(_haversine_m(
-            row["pred_lat"], row["pred_lon"],
-            row["gps_lat"],  row["gps_lon"]))
-        if row["obs"]:
-            obs_dists.append(d_acc)
-
-    # ── Error plot ───────────────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(12, 4))
-    fig.patch.set_facecolor("#0e1117")
-    ax.set_facecolor("#0e1117")
-
-    ax.plot(cum_dist, errors, color='cyan', linewidth=1.2, label='Error (m)')
-    ax.fill_between(cum_dist, errors, alpha=0.15, color='cyan')
-    for od in obs_dists:
-        ax.axvline(od, color='orange', linewidth=0.8, alpha=0.6)
-
-    ax.set_xlabel("Distance travelled (m)", color='white')
-    ax.set_ylabel("Position error (m)", color='white')
-    ax.set_title(f"Position error  |  mean={sum(errors)/len(errors):.0f}m  "
-                 f"max={max(errors):.0f}m", color='white')
-    ax.tick_params(colors='white')
-    for spine in ax.spines.values():
-        spine.set_edgecolor('#444')
-    ax.legend(handles=[
-        plt.Line2D([0], [0], color='cyan', linewidth=1.5, label='Error (m)'),
-        mpatches.Patch(color='orange', alpha=0.6, label='Sign observation'),
-    ], facecolor='#1a1a2e', labelcolor='white')
-
-    plt.tight_layout()
-    p1 = output_dir / "error_plot.png"
-    plt.savefig(p1, dpi=150, bbox_inches='tight', facecolor='#0e1117')
-    plt.close()
-    print(f"  Error plot saved: {p1.name}")
-
-    # ── GPS comparison map ───────────────────────────────────────────────
     gps_lats  = [r["gps_lat"]  for r in track]
     gps_lons  = [r["gps_lon"]  for r in track]
     pred_lats = [r["pred_lat"] for r in track]
     pred_lons = [r["pred_lon"] for r in track]
 
+    # Compute errors and cumulative distance
+    elapsed, errors = [], []
+    t_acc = 0.0
+    for row in track:
+        t_acc += row["dist_m"]
+        elapsed.append(t_acc)
+        errors.append(_haversine_m(
+            row["pred_lat"], row["pred_lon"],
+            row["gps_lat"],  row["gps_lon"]))
+
+    max_err = max(errors) if errors else 1.0
+    errors_pct = [e / max_err * 100 for e in errors]
+
+    # Shared bounding box covering both tracks
     all_lats = gps_lats + pred_lats
     all_lons = gps_lons + pred_lons
     margin = 0.05
     bbox = (max(all_lats) + margin, min(all_lats) - margin,
             max(all_lons) + margin, min(all_lons) - margin)
+    lon_min, lon_max = min(all_lons) - margin, max(all_lons) + margin
+    lat_min, lat_max = min(all_lats) - margin, max(all_lats) + margin
 
-    fig2, ax2 = ox.plot_graph(G, show=False, close=False, bbox=bbox,
-                              bgcolor='#0e1117', node_size=0,
-                              edge_color='#2a2f3a', edge_linewidth=0.5,
-                              figsize=(12, 9))
-    ax2.plot(gps_lons, gps_lats, color='#00ff88', linewidth=1.5,
-             alpha=0.85, zorder=4, label='GPS ground truth')
-    ax2.plot(pred_lons, pred_lats, color='cyan', linewidth=1.5,
-             alpha=0.85, zorder=4, label='Particle filter estimate')
-    for row in track:
-        if row["obs"]:
-            ax2.scatter(row["gps_lon"], row["gps_lat"], s=30,
-                        color='orange', zorder=5, linewidths=0)
-    ax2.legend(facecolor='#1a1a2e', labelcolor='white', loc='upper right')
-    ax2.set_title("GPS vs particle filter", color='white', fontsize=10)
+    # ── evaluation.png: side-by-side maps on road graph ─────────────────
+    # osmnx creates its own figure, so render each panel separately
+    # then combine into one figure using their pixel data.
+    import io
+    from PIL import Image
 
-    p2 = output_dir / "gps_map.png"
-    plt.savefig(p2, dpi=150, bbox_inches='tight', facecolor='#0e1117')
+    def _render_track(lons, lats, color, title):
+        fig_, ax_ = ox.plot_graph(G, show=False, close=False, bbox=bbox,
+                                  bgcolor='#0e1117', node_size=0,
+                                  edge_color='#2a2f3a', edge_linewidth=0.5,
+                                  figsize=(9, 9))
+        ax_.plot(lons, lats, color=color, linewidth=2.5,
+                 alpha=0.9, zorder=4, solid_capstyle='round')
+        ax_.set_xlim(lon_min, lon_max)
+        ax_.set_ylim(lat_min, lat_max)
+        ax_.set_title(title, color='white', fontsize=13,
+                      fontweight='bold', pad=10)
+        buf = io.BytesIO()
+        fig_.savefig(buf, dpi=150, bbox_inches='tight', facecolor='#0e1117')
+        plt.close(fig_)
+        buf.seek(0)
+        return Image.open(buf).copy()
+
+    img_pred = _render_track(pred_lons, pred_lats, '#3a9bdc', 'Predicted track')
+    img_gps  = _render_track(gps_lons,  gps_lats,  '#e07b39', 'GPS ground truth')
+
+    combined_w = img_pred.width + img_gps.width
+    combined_h = max(img_pred.height, img_gps.height)
+    combined = Image.new('RGB', (combined_w, combined_h), (14, 17, 23))
+    combined.paste(img_pred, (0, 0))
+    combined.paste(img_gps,  (img_pred.width, 0))
+
+    p1 = output_dir / "evaluation.png"
+    combined.save(str(p1), dpi=(150, 150))
+    print(f"  Evaluation map saved: {p1.name}")
+
+    # ── error_plot.png: error % vs time elapsed ─────────────────────────
+    fig, ax = plt.subplots(figsize=(7, 7), facecolor='white')
+    ax.set_facecolor('white')
+    ax.plot(elapsed, errors_pct, color='black', linewidth=1.5)
+    ax.set_xlabel('Time elapsed', fontsize=11)
+    ax.set_ylabel('Error %', fontsize=11)
+    ax.set_ylim(0, 105)
+    ax.tick_params(left=True, bottom=False, labelbottom=False)
+    for spine in ['top', 'right', 'bottom']:
+        ax.spines[spine].set_visible(False)
+    ax.spines['left'].set_linewidth(1.5)
+
+    plt.tight_layout()
+    p2 = output_dir / "error_plot.png"
+    plt.savefig(p2, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
-    print(f"  GPS map saved: {p2.name}")
+    print(f"  Error plot saved: {p2.name}")
 
 
 # ── Main loop ────────────────────────────────────────────────────────────────
@@ -261,7 +269,7 @@ def main():
     from ocr import process_image
     from localizer import (load_graph, CityDistanceService, ParticleFilter,
                            cross_check_observation,
-                           plot_particle_map, plot_latest_map)
+                           plot_particle_map)
     import osmnx as ox
 
     print("Loading road graph ...")
@@ -464,6 +472,9 @@ def main():
                         "heading_deg": round(heading, 2) if heading else None,
                         "speed_ms":    round(tel["speed"], 2) if tel else None,
                     },
+                    "gps": {
+                        "lat": tel["lat"], "lon": tel["lon"],
+                    } if tel and "lat" in tel else None,
                     "estimate":      {"lat": map_lat,  "lon": map_lon,
                                       "uncertainty_m": map_unc},
                     "estimate_mean": {"lat": mean_lat, "lon": mean_lon,
@@ -495,10 +506,6 @@ def main():
                     except Exception as e:
                         print(f"  Map warning: {e}")
 
-                try:
-                    plot_latest_map(pf, G, city_svc, output_dir=RESULTS_DIR)
-                except Exception as e:
-                    print(f"  Latest map warning: {e}")
 
                 last_t_ns = timestamp
                 frame_idx += 1
@@ -514,7 +521,13 @@ def main():
             pf.update(remaining)
 
     if eval_track:
-        print("\nGenerating evaluation plots ...")
+        # Save the full track to disk so plots can be regenerated later
+        track_file = RESULTS_DIR / "eval_track.json"
+        with open(track_file, "w") as f:
+            json.dump(eval_track, f)
+        print(f"\nEval track saved: {len(eval_track)} points")
+
+        print("Generating evaluation plots ...")
         try:
             generate_evaluation(eval_track, G, RESULTS_DIR)
         except Exception as e:

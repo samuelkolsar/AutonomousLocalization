@@ -13,10 +13,6 @@ __pycache__/
 # Cached graph and city distances
 cache/
 
-# YOLO model weights (large binary)
-*.pt
-*.pth
-
 # Bagpy CSV export cache
 *.bag_data/
 
