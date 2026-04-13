@@ -1,5 +1,5 @@
 """
-localizer.py — Particle filter for GPS-free vehicle localisation.
+localizer.py — Particle filter for GPS-free vehicle localization.
 
 Uses road sign distance readings (e.g. "TARTU 82 km") combined with
 vehicle odometry and compass heading to estimate position on the

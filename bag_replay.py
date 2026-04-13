@@ -21,7 +21,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import pandas as pd
 
 # ── Paths and topics ─────────────────────────────────────────────────────────
 
@@ -40,6 +39,7 @@ INSPVA_TOPIC         = "/novatel/oem7/inspva"
 def _load_inspva(bag_path: str) -> list[dict]:
     """Extract INSPVA telemetry (heading, speed, position) via bagpy."""
     import bagpy
+    import pandas as pd
     b        = bagpy.bagreader(bag_path)
     csv_path = b.message_by_topic(INSPVA_TOPIC)
     df       = pd.read_csv(csv_path)
@@ -265,7 +265,7 @@ def main():
         print("Results cleared.")
 
     # ── Load models ──────────────────────────────────────────────────────
-    print("Loading OCR and localisation modules ...")
+    print("Loading OCR and localization modules ...")
     from ocr import process_image
     from localizer import (load_graph, CityDistanceService, ParticleFilter,
                            cross_check_observation,

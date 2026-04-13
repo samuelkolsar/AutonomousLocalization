@@ -18,7 +18,7 @@ from place_names import ESTONIAN_PLACE_NAMES
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-YOLO_MODEL_PATH       = "sign_detector.pt"
+YOLO_MODEL_PATH       = "sign_detector_v11.pt"
 MIN_OCR_CONFIDENCE    = 0.25
 FUZZY_MATCH_THRESHOLD = 65    # partial_ratio threshold for fuzzy correction
 ROW_TOLERANCE         = 1.5   # vertical alignment tolerance (multiples of text height)

@@ -17,6 +17,7 @@ cache/
 *.bag_data/
 
 # Common IDE / OS files
+.idea/
 .venv/
 *.egg-info/
 .DS_Store

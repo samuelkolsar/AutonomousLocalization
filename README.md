@@ -1,6 +1,6 @@
-# Autonomous Localisation via Road Sign OCR
+# Autonomous Localization via Road Sign OCR
 
-GPS-free vehicle localisation on the Estonian road network. A particle filter
+GPS-free vehicle localization on the Estonian road network. A particle filter
 estimates the vehicle's position by matching road sign distance readings
 (e.g. "TARTU 82 km") against precomputed Dijkstra distances from city centres
 to every node in the OSM road graph. Odometry and compass heading from a
@@ -39,7 +39,7 @@ ROS1 .bag file
 pip install -r requirements.txt
 ```
 
-Place your trained YOLO weights (`sign_detector.pt`) in the project root.
+Place your trained YOLO weights (`sign_detector_v11.pt`) in the project root.
 
 The Estonia road graph is downloaded from OpenStreetMap automatically on first
 run and cached to `cache/estonia_drive.pkl` (~5–15 minutes, one-time).
