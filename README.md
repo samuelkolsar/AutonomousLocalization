@@ -28,7 +28,7 @@ ROS1 .bag file
 
 | File | Purpose |
 |---|---|
-| `bag_replay.py` | Main script , replays a ROS1 bag through the pipeline |
+| `bag_replay.py` | Main script, replays a ROS1 bag through the pipeline |
 | `ocr.py` | YOLO sign detection + EasyOCR + city/distance parsing |
 | `localizer.py` | Particle filter, city distance service, visualisation |
 | `place_names.py` | List of Estonian place names for OCR fuzzy correction |
@@ -58,7 +58,7 @@ python bag_replay.py recording.bag --reset           # clear previous results fi
 python bag_replay.py recording.bag --camera /topic   # specify camera topic
 ```
 
-Press **Ctrl+C** at any time to stop , evaluation plots are generated from
+Press **Ctrl+C** at any time to stop, evaluation plots are generated from
 whatever data was collected up to that point.
 
 ## Output
