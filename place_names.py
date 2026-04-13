@@ -1,5 +1,5 @@
 """
-place_names.py — List of Estonian settlement names for OCR fuzzy matching.
+place_names.py: List of Estonian settlement names for OCR fuzzy matching.
 
 Used by ocr.py to correct misread sign text to the nearest known place name.
 """

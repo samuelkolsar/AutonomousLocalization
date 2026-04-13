@@ -1,5 +1,5 @@
 """
-ocr.py — Road sign detection and OCR pipeline.
+ocr.py: Road sign detection and OCR pipeline.
 
 Detects road signs using YOLO, reads text with EasyOCR, and parses
 city name + distance pairs (e.g. "TARTU 82") from the detected text.
@@ -16,9 +16,8 @@ from rapidfuzz import process, fuzz
 
 from place_names import ESTONIAN_PLACE_NAMES
 
-# ── Configuration ────────────────────────────────────────────────────────────
-
-YOLO_MODEL_PATH       = "sign_detector_v11.pt"
+# Configuration
+YOLO_MODEL_PATH       = "models/sign_detector_v11.pt"
 MIN_OCR_CONFIDENCE    = 0.25
 FUZZY_MATCH_THRESHOLD = 65    # partial_ratio threshold for fuzzy correction
 ROW_TOLERANCE         = 1.5   # vertical alignment tolerance (multiples of text height)
@@ -27,15 +26,13 @@ ROW_TOLERANCE         = 1.5   # vertical alignment tolerance (multiples of text 
 MIN_DISTANCE_KM = 5
 MAX_DISTANCE_KM = 400
 
-# ── Regex patterns ───────────────────────────────────────────────────────────
-
+# Regex patterns
 CITY_RE    = re.compile(r'^[A-ZÕÄÖÜ][a-zõäöüA-ZÕÄÖÜ\-]{2,}$')
 NUMBER_RE  = re.compile(r'^\d{1,4}$')
 INLINE_RE  = re.compile(r'([A-ZÕÄÖÜ][a-zõäöüA-ZÕÄÖÜ\-]{2,})\s+(\d{1,4})')
 E_ROUTE_RE = re.compile(r'\bE\s*(\d{2,4})\b', re.IGNORECASE)
 
-# ── Lazy-loaded singletons ───────────────────────────────────────────────────
-
+# Lazy-loaded singletons
 _yolo_model = None
 _ocr_reader = None
 
@@ -56,8 +53,7 @@ def _get_ocr():
     return _ocr_reader
 
 
-# ── Preprocessing ────────────────────────────────────────────────────────────
-
+# Preprocessing
 def _preprocess_crop(crop: np.ndarray) -> np.ndarray:
     """Upscale small crops and apply CLAHE contrast enhancement."""
     if crop.size == 0:
@@ -77,8 +73,7 @@ def _preprocess_crop(crop: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
 
 
-# ── Detection and OCR ────────────────────────────────────────────────────────
-
+# Detection and OCR
 def detect_signs(image_path: str) -> list[np.ndarray]:
     """Run YOLO on the image and return cropped sign regions."""
     model = _get_yolo()
@@ -110,8 +105,7 @@ def run_ocr(crop: np.ndarray) -> list[dict]:
     return hits
 
 
-# ── Fuzzy matching ───────────────────────────────────────────────────────────
-
+# Fuzzy matching
 def fuzzy_correct_city(text: str) -> str:
     """
     Map OCR text to the nearest known Estonian place name using fuzzy matching.
@@ -132,8 +126,7 @@ def fuzzy_correct_city(text: str) -> str:
     return match
 
 
-# ── Bounding box helpers ────────────────────────────────────────────────────
-
+# Bounding box helpers
 def _box_center_y(box) -> float:
     ys = [pt[1] for pt in box]
     return (min(ys) + max(ys)) / 2.0
@@ -147,8 +140,7 @@ def _box_height(box) -> float:
     return max(ys) - min(ys)
 
 
-# ── City–distance parsing ───────────────────────────────────────────────────
-
+# City–distance parsing
 def _collect_route_numbers(hits: list[dict]) -> set[int]:
     """
     Identify European route codes (E263, E265, etc.) so they are not
@@ -188,7 +180,7 @@ def parse_city_distances(hits: list[dict]) -> list[dict]:
     parsed = []
     used = set()
 
-    # --- Pass 1: inline matches (city + number on same line) ---
+    # Pass 1: inline matches (city + number on same line)
     for i, hit in enumerate(hits):
         for m in INLINE_RE.finditer(hit['text']):
             dist = int(m.group(2))
@@ -203,7 +195,7 @@ def parse_city_distances(hits: list[dict]) -> list[dict]:
 
     remaining = [(i, h) for i, h in enumerate(hits) if i not in used]
 
-    # --- Pass 2: spatial pairing (same row, number to the right of city) ---
+    # Pass 2: spatial pairing (same row, number to the right of city)
     cities  = [(i, h) for i, h in remaining if CITY_RE.match(h['text'])]
     numbers = [(i, h) for i, h in remaining if NUMBER_RE.match(h['text'])]
 
@@ -237,7 +229,7 @@ def parse_city_distances(hits: list[dict]) -> list[dict]:
                 parsed.append({'city': city, 'distance_km': dist,
                                'ocr_confidence': conf})
 
-    # --- Pass 3: sequential fallback (pair in reading order) ---
+    # Pass 3: sequential fallback (pair in reading order)
     remaining = [(i, h) for i, h in enumerate(hits) if i not in used]
     city_tokens  = [(i, h) for i, h in remaining if CITY_RE.match(h['text'])]
     number_tokens = [(i, h) for i, h in remaining if NUMBER_RE.match(h['text'])]
@@ -258,8 +250,7 @@ def parse_city_distances(hits: list[dict]) -> list[dict]:
     return parsed
 
 
-# ── Public entry point ───────────────────────────────────────────────────────
-
+# Public entry point
 def process_image(image_path: str) -> list[dict]:
     """
     Full pipeline: detect signs with YOLO, run OCR, parse city–distance pairs.

@@ -1,5 +1,5 @@
 """
-localizer.py — Particle filter for GPS-free vehicle localization.
+localizer.py: Particle filter for GPS-free vehicle localization.
 
 Uses road sign distance readings (e.g. "TARTU 82 km") combined with
 vehicle odometry and compass heading to estimate position on the
@@ -28,8 +28,7 @@ from tqdm import tqdm
 warnings.filterwarnings('ignore')
 ox.settings.log_console = False
 
-# ── Constants ────────────────────────────────────────────────────────────────
-
+# Constants
 CACHE_DIR  = Path("cache")
 GRAPH_FILE = CACHE_DIR / "estonia_drive.pkl"
 
@@ -56,8 +55,7 @@ HEADING_CORRECTION_DEG = 115  # threshold for snapping wrong-direction particles
 rng = np.random.default_rng(42)
 
 
-# ── Graph loading ────────────────────────────────────────────────────────────
-
+# Graph loading
 def load_graph(cache_path: Path = GRAPH_FILE) -> nx.MultiDiGraph:
     """Load the Estonia road graph from cache, or download from OSM if missing."""
     if cache_path.exists():
@@ -123,8 +121,7 @@ def _heading_factor(u: int, v: int, G: nx.MultiDiGraph,
     return float(np.exp(-0.5 * (min(diff_fwd, diff_rev) / sigma) ** 2))
 
 
-# ── City distance service ────────────────────────────────────────────────────
-
+# City distance service
 class CityDistanceService:
     """
     Precomputes and caches shortest-path distances from city centres to
@@ -188,8 +185,7 @@ class CityDistanceService:
         return self._geocodes[city]
 
 
-# ── Particle ─────────────────────────────────────────────────────────────────
-
+# Particle
 @dataclass
 class Particle:
     """A single particle representing a hypothesis about the vehicle's position."""
@@ -201,8 +197,7 @@ class Particle:
     weight: float = 1.0
 
 
-# ── Observation validation ───────────────────────────────────────────────────
-
+# Observation validation
 def cross_check_observation(observation: list[dict],
                             city_svc: CityDistanceService,
                             tolerance_km: float = 30.0) -> list[dict]:
@@ -247,8 +242,7 @@ def cross_check_observation(observation: list[dict],
     return result
 
 
-# ── Scoring ──────────────────────────────────────────────────────────────────
-
+# Scoring
 def _observation_factor(d_actual: float, d_sign: float, conf: float,
                         sigma: float = SCORE_SIGMA_M) -> float:
     """
@@ -278,8 +272,7 @@ def score_particle(p: Particle, observation: list[dict],
     return total
 
 
-# ── Particle filter ──────────────────────────────────────────────────────────
-
+# Particle filter
 class ParticleFilter:
     def __init__(self, G: nx.MultiDiGraph, edges_gdf: gpd.GeoDataFrame,
                  city_svc: CityDistanceService):
@@ -310,8 +303,7 @@ class ParticleFilter:
             self._adj[u].append((v, length, data.get("geometry")))
         print(f"  {len(self._adj):,} nodes ({time.time()-t0:.1f}s)")
 
-    # ── Initialisation ───────────────────────────────────────────────────────
-
+    # Initialisation
     def initialise(self, observation: list[dict]) -> None:
         """
         Create the initial particle distribution by sampling highway edges
@@ -411,14 +403,13 @@ class ParticleFilter:
 
         # Reject if initial spread is too large (likely a misread sign)
         if unc > 30_000:
-            print(f"  WARNING: uncertainty too high ({unc:.0f}m) -- rejecting init")
+            print(f"  WARNING: uncertainty too high ({unc:.0f}m), rejecting init")
             self.particles  = []
             self.history    = []
             self.step_index = 0
             self.initialised = False
 
-    # ── Predict (motion model) ───────────────────────────────────────────────
-
+    # Predict (motion model)
     def predict(self, delta_distance_m: float = 0.0,
                 heading_deg: Optional[float] = None) -> None:
         """
@@ -636,8 +627,7 @@ class ParticleFilter:
             print(f"  Heading correction: {n_snapped}/{len(particles)} snapped")
         return result
 
-    # ── Update (observation model) ───────────────────────────────────────────
-
+    # Update (observation model)
     def update(self, observation: list[dict]) -> None:
         """Reweight particles based on observed city distances from a sign."""
         target_step = self.step_index + 1
@@ -645,7 +635,7 @@ class ParticleFilter:
 
         observation = [d for d in observation if self.city_svc.load(d["city"])]
         if not observation:
-            print("  WARNING: no valid cities -- skipping update")
+            print("  WARNING: no valid cities, skipping update")
             return
 
         new_weights = np.array([
@@ -654,7 +644,7 @@ class ParticleFilter:
         ])
         total_w = new_weights.sum()
         if total_w == 0:
-            print("  WARNING: all weights zero -- keeping previous distribution")
+            print("  WARNING: all weights zero, keeping previous distribution")
             return
         new_weights /= total_w
 
@@ -666,7 +656,7 @@ class ParticleFilter:
             (new_lat - cur_lat) ** 2 +
             ((new_lon - cur_lon) * np.cos(np.radians(cur_lat))) ** 2)
         if jump_m > 100_000:
-            print(f"  WARNING: {jump_m/1000:.0f}km jump -- observation rejected")
+            print(f"  WARNING: {jump_m/1000:.0f}km jump, observation rejected")
             return
 
         for p, w in zip(self.particles, new_weights):
@@ -686,8 +676,7 @@ class ParticleFilter:
         print(f"  Estimate: ({lat:.5f}, {lon:.5f})  unc={unc:.0f}m")
         print(f"  MAP:      ({map_lat:.5f}, {map_lon:.5f})  spread={map_unc:.0f}m")
 
-    # ── Resampling ───────────────────────────────────────────────────────────
-
+    # Resampling
     def _systematic_resample(self, weights: np.ndarray) -> None:
         """
         Systematic resampling with roughening: duplicate high-weight particles,
@@ -719,8 +708,7 @@ class ParticleFilter:
         self.particles = new_particles
         print(f"  Resampled {N_PARTICLES} particles")
 
-    # ── Estimation ───────────────────────────────────────────────────────────
-
+    # Estimation
     def estimate(self) -> tuple[float, float, float]:
         """Weighted mean estimate. Returns (lat, lon, uncertainty_m)."""
         weights = np.array([p.weight for p in self.particles])
@@ -746,7 +734,7 @@ class ParticleFilter:
         lons    = np.array([p.lon for p in self.particles])
 
         if weights.max() - weights.min() < 1e-12:
-            # Uniform weights -- pick particle closest to mean
+            # Uniform weights, pick particle closest to mean
             mean_lat, mean_lon = float(np.mean(lats)), float(np.mean(lons))
             cos_lat = np.cos(np.radians(mean_lat))
             dy = 111_320.0 * (lats - mean_lat)
@@ -784,8 +772,7 @@ class ParticleFilter:
         w = weights[valid]
         return float(np.average(dists[valid], weights=w / w.sum())) / 1000.0
 
-    # ── History ──────────────────────────────────────────────────────────────
-
+    # History
     def _save_snapshot(self, label: str, observation: list[dict]) -> None:
         lat, lon, unc = self.estimate()
         map_lat, map_lon, map_unc = self.estimate_map()
@@ -798,8 +785,7 @@ class ParticleFilter:
         })
 
 
-# ── Visualisation ────────────────────────────────────────────────────────────
-
+# Visualisation
 REFERENCE_CITIES = {
     "Tallinn":  (59.4370, 24.7536),
     "Tartu":    (58.3780, 26.7290),
@@ -871,7 +857,7 @@ def plot_particle_map(pf: ParticleFilter, G: nx.MultiDiGraph,
                               node_size=0, edge_color='#333844',
                               edge_linewidth=0.5, figsize=(14, 10))
     _draw_overlay(ax1, pf, city_svc, parts, est, weights)
-    ax1.set_title("Full -- " + title, color='white', fontsize=9)
+    ax1.set_title("Full, " + title, color='white', fontsize=9)
     p1 = output_dir / f"map_full_step{pf.step_index}.png"
     plt.savefig(p1, dpi=150, bbox_inches='tight', facecolor='#0e1117')
     plt.close()
@@ -894,7 +880,7 @@ def plot_particle_map(pf: ParticleFilter, G: nx.MultiDiGraph,
     _draw_overlay(ax2, pf, city_svc, parts, est, weights)
     ax2.set_xlim(lon_min, lon_max)
     ax2.set_ylim(lat_min, lat_max)
-    ax2.set_title("Zoomed -- " + title, color='white', fontsize=9)
+    ax2.set_title("Zoomed, " + title, color='white', fontsize=9)
     p2 = output_dir / f"map_zoomed_step{pf.step_index}.png"
     plt.savefig(p2, dpi=150, bbox_inches='tight', facecolor='#0e1117')
     plt.close()
@@ -945,7 +931,7 @@ def plot_latest_map(pf: ParticleFilter, G: nx.MultiDiGraph,
                marker='+', linewidths=2.5, zorder=6)
     ax.set_xlim(lon_min, lon_max)
     ax.set_ylim(lat_min, lat_max)
-    ax.set_title("Latest -- " + title, color='white', fontsize=9)
+    ax.set_title("Latest, " + title, color='white', fontsize=9)
 
     out = output_dir / "latest_map.png"
     plt.savefig(out, dpi=120, bbox_inches='tight', facecolor='#0e1117')

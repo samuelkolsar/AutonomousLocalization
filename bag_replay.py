@@ -1,5 +1,5 @@
 """
-bag_replay.py — Replay a ROS1 .bag file through the particle filter.
+bag_replay.py: Replay a ROS1 .bag file through the particle filter.
 
 Reads camera frames and NovAtel INSPVA telemetry (heading + speed) from a
 .bag file and feeds them into the OCR + particle filter pipeline.
@@ -22,8 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-# ── Paths and topics ─────────────────────────────────────────────────────────
-
+# Paths and topics
 RESULTS_DIR = Path("results")
 CACHE_DIR   = Path("cache")
 
@@ -34,8 +33,7 @@ DEFAULT_CAMERA_TOPIC = "/interfacea/link3/image/compressed"
 INSPVA_TOPIC         = "/novatel/oem7/inspva"
 
 
-# ── Telemetry ────────────────────────────────────────────────────────────────
-
+# Telemetry
 def _load_inspva(bag_path: str) -> list[dict]:
     """Extract INSPVA telemetry (heading, speed, position) via bagpy."""
     import bagpy
@@ -84,16 +82,14 @@ def _distance_between(records: list[dict], t_start_ns: int, t_end_ns: int) -> fl
     return avg_speed * dt_s
 
 
-# ── Image decoding ───────────────────────────────────────────────────────────
-
+# Image decoding
 def _decode_compressed(data: bytes) -> np.ndarray | None:
     """Decode JPEG/PNG bytes from a CompressedImage message."""
     arr = np.frombuffer(data, dtype=np.uint8)
     return cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
 
-# ── OCR deduplication ────────────────────────────────────────────────────────
-
+# OCR deduplication
 def _deduplicate(destinations: list[dict]) -> list[dict]:
     """Keep only the highest-confidence reading per city."""
     by_conf = sorted(destinations, key=lambda d: -d["ocr_confidence"])
@@ -105,8 +101,7 @@ def _deduplicate(destinations: list[dict]) -> list[dict]:
     return out
 
 
-# ── Temporal sign averaging ──────────────────────────────────────────────────
-
+# Temporal sign averaging
 def _flush_sign_buffer(sign_buffer: dict) -> list[dict]:
     """
     Fuse buffered readings per city into a single observation.
@@ -135,8 +130,7 @@ def _flush_sign_buffer(sign_buffer: dict) -> list[dict]:
     return fused
 
 
-# ── Evaluation plots ─────────────────────────────────────────────────────────
-
+# Evaluation plots
 def _haversine_m(lat1, lon1, lat2, lon2):
     """Great-circle distance in metres between two lat/lon points."""
     R = 6_371_000
@@ -150,8 +144,8 @@ def _haversine_m(lat1, lon1, lat2, lon2):
 def generate_evaluation(track: list[dict], G, output_dir: Path) -> None:
     """
     Generate two evaluation outputs:
-      1. evaluation.png  -- predicted track and GPS track side by side on road graph
-      2. error_plot.png  -- position error % vs distance travelled
+      1. evaluation.png , predicted track and GPS track side by side on road graph
+      2. error_plot.png , position error % vs distance travelled
     """
     import matplotlib.pyplot as plt
     import osmnx as ox
@@ -187,7 +181,7 @@ def generate_evaluation(track: list[dict], G, output_dir: Path) -> None:
     lon_min, lon_max = min(all_lons) - margin, max(all_lons) + margin
     lat_min, lat_max = min(all_lats) - margin, max(all_lats) + margin
 
-    # ── evaluation.png: side-by-side maps on road graph ─────────────────
+    # evaluation.png: side-by-side maps on road graph
     # osmnx creates its own figure, so render each panel separately
     # then combine into one figure using their pixel data.
     import io
@@ -223,7 +217,7 @@ def generate_evaluation(track: list[dict], G, output_dir: Path) -> None:
     combined.save(str(p1), dpi=(150, 150))
     print(f"  Evaluation map saved: {p1.name}")
 
-    # ── error_plot.png: error % vs time elapsed ─────────────────────────
+    # error_plot.png: error % vs time elapsed
     fig, ax = plt.subplots(figsize=(7, 7), facecolor='white')
     ax.set_facecolor('white')
     ax.plot(elapsed, errors_pct, color='black', linewidth=1.5)
@@ -242,8 +236,7 @@ def generate_evaluation(track: list[dict], G, output_dir: Path) -> None:
     print(f"  Error plot saved: {p2.name}")
 
 
-# ── Main loop ────────────────────────────────────────────────────────────────
-
+# Main loop
 def main():
     parser = argparse.ArgumentParser(
         description="Replay a ROS1 bag through the particle filter pipeline")
@@ -264,7 +257,7 @@ def main():
             entry.unlink() if entry.is_file() else shutil.rmtree(entry)
         print("Results cleared.")
 
-    # ── Load models ──────────────────────────────────────────────────────
+    # Load models
     print("Loading OCR and localization modules ...")
     from ocr import process_image
     from localizer import (load_graph, CityDistanceService, ParticleFilter,
@@ -278,7 +271,7 @@ def main():
     city_svc     = CityDistanceService(G)
     pf           = ParticleFilter(G, edges_gdf, city_svc)
 
-    # ── Load telemetry ───────────────────────────────────────────────────
+    # Load telemetry
     print(f"\nOpening bag: {bag_path}")
     from rosbags.rosbag1 import Reader
     from rosbags.typesys import Stores, get_typestore
@@ -297,7 +290,7 @@ def main():
     eval_track: list[dict]          = []
     sign_buffer: dict[str, list]    = {}
 
-    # ── Replay loop ──────────────────────────────────────────────────────
+    # Replay loop
     MIN_SPEED_MS        = 1.0     # below this, distance = 0
     MIN_SPEED_HEADING   = 3.0     # below this, heading is unreliable
     SIGN_BUFFER_FRAMES  = 10      # max frames to buffer a visible sign
@@ -328,7 +321,7 @@ def main():
             def handle_sigint(signum, frame):
                 nonlocal stop_requested
                 stop_requested = True
-                print("\n  [Ctrl+C -- stopping after this frame]")
+                print("\n  [Ctrl+C, stopping after this frame]")
             prev_handler = signal.signal(signal.SIGINT, handle_sigint)
 
             for conn, timestamp, rawdata in reader.messages(connections=camera_conns):
@@ -348,7 +341,7 @@ def main():
                 print(f"{'~'*55}")
                 print(f"  Frame {frame_idx}  |  t={timestamp/1e9:.2f}s")
 
-                # ── Telemetry ────────────────────────────────────────
+                # Telemetry
                 tel = _nearest_inspva(inspva, timestamp)
                 spd = tel["speed"] if tel else 0.0
 
@@ -365,20 +358,20 @@ def main():
                                else f"suppressed ({spd:.1f}m/s)")
                     print(f"  dist={distance_m:.1f}m  hdg={hdg_str}  spd={spd:.1f}m/s")
 
-                # ── OCR ──────────────────────────────────────────────
+                # OCR
                 try:
                     raw_dests = _deduplicate(process_image(str(tmp_img)))
                 except Exception as e:
                     print(f"  OCR error: {e}")
                     raw_dests = []
 
-                # ── Temporal averaging ───────────────────────────────
+                # Temporal averaging
                 # Buffer sign readings across frames, flush when sign
                 # leaves view or buffer is full.
                 destinations = []
                 if not raw_dests:
                     if sign_buffer:
-                        print("  Sign left view -- flushing buffer.")
+                        print("  Sign left view, flushing buffer.")
                         destinations = _flush_sign_buffer(sign_buffer)
                         sign_buf_frames = 0
                 else:
@@ -386,15 +379,15 @@ def main():
                         sign_buffer.setdefault(det["city"], []).append(det)
                     sign_buf_frames += 1
                     if sign_buf_frames >= SIGN_BUFFER_FRAMES:
-                        print(f"  Buffer full -- flushing.")
+                        print(f"  Buffer full, flushing.")
                         destinations = _flush_sign_buffer(sign_buffer)
                         sign_buf_frames = 0
 
-                # ── Multi-city cross-check ───────────────────────────
+                # Multi-city cross-check
                 if len(destinations) >= 2 and pf.initialised:
                     destinations = cross_check_observation(destinations, city_svc)
 
-                # ── Single-city plausibility check ───────────────────
+                # Single-city plausibility check
                 # Reject if OCR distance is far from what particles predict
                 if len(destinations) == 1 and pf.initialised:
                     det = destinations[0]
@@ -404,10 +397,10 @@ def main():
                         if diff > SINGLE_CITY_TOL_KM:
                             print(f"  [single-city] {det['city']}: "
                                   f"OCR={det['distance_km']:.0f}km vs "
-                                  f"pred={pred_km:.0f}km -- rejected")
+                                  f"pred={pred_km:.0f}km, rejected")
                             destinations = []
 
-                # ── Particle filter step ─────────────────────────────
+                # Particle filter step
                 accum_dist += distance_m
                 frames_since_pred += 1
                 if heading is not None:
@@ -427,7 +420,7 @@ def main():
 
                     elif frames_since_pred >= PREDICT_EVERY:
                         if not pf.initialised:
-                            print("  Not initialised -- skipping.")
+                            print("  Not initialised, skipping.")
                             accum_dist = 0.0
                             frames_since_pred = 0
                             last_t_ns = timestamp
@@ -457,7 +450,7 @@ def main():
                     frame_idx += 1
                     continue
 
-                # ── Save results ─────────────────────────────────────
+                # Save results
                 map_lat, map_lon, map_unc = pf.estimate_map()
                 mean_lat, mean_lon, mean_unc = pf.estimate()
 
@@ -512,7 +505,7 @@ def main():
 
             signal.signal(signal.SIGINT, prev_handler)
 
-    # ── Post-processing ──────────────────────────────────────────────────
+    # Post-processing
     if sign_buffer and pf.initialised:
         print("\nFlushing remaining sign buffer.")
         remaining = _flush_sign_buffer(sign_buffer)

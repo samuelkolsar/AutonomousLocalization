@@ -16,6 +16,10 @@ cache/
 # Bagpy CSV export cache
 *.bag_data/
 
+# Ignore stray model files outside the models/ folder
+*.pt
+!models/*.pt
+
 # Common IDE / OS files
 .idea/
 .venv/

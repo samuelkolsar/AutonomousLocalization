@@ -28,7 +28,7 @@ ROS1 .bag file
 
 | File | Purpose |
 |---|---|
-| `bag_replay.py` | Main script — replays a ROS1 bag through the pipeline |
+| `bag_replay.py` | Main script , replays a ROS1 bag through the pipeline |
 | `ocr.py` | YOLO sign detection + EasyOCR + city/distance parsing |
 | `localizer.py` | Particle filter, city distance service, visualisation |
 | `place_names.py` | List of Estonian place names for OCR fuzzy correction |
@@ -39,7 +39,7 @@ ROS1 .bag file
 pip install -r requirements.txt
 ```
 
-Place your trained YOLO weights (`sign_detector_v11.pt`) in the project root.
+Model weights are included in the `models/` folder (`sign_detector_v11.pt` for YOLOv11, `sign_detector_v8.pt` for YOLOv8).
 
 The Estonia road graph is downloaded from OpenStreetMap automatically on first
 run and cached to `cache/estonia_drive.pkl` (~5–15 minutes, one-time).
@@ -58,7 +58,7 @@ python bag_replay.py recording.bag --reset           # clear previous results fi
 python bag_replay.py recording.bag --camera /topic   # specify camera topic
 ```
 
-Press **Ctrl+C** at any time to stop — evaluation plots are generated from
+Press **Ctrl+C** at any time to stop , evaluation plots are generated from
 whatever data was collected up to that point.
 
 ## Output
