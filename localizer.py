@@ -39,7 +39,7 @@ HIGHWAY_TYPES = {
 }
 
 # Particle filter parameters
-N_PARTICLES        = 500
+N_PARTICLES        = 100      # Swarm size, particle count.
 SCORE_SIGMA_M      = 2000     # Gaussian sigma for distance-based scoring (metres)
 SAMPLE_SPACING_M   = 50       # spacing between sample points on edges during init
 RESAMPLE_THRESHOLD = 0.5      # ESS ratio below which we resample
