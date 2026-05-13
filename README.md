@@ -1,12 +1,19 @@
 # Autonomous Localization via Road Sign OCR
 
-GPS-free vehicle localization on the Estonian road network. A particle filter
-estimates the vehicle's position by matching road sign distance readings
-(e.g. "TARTU 82 km") against precomputed Dijkstra distances from city centres
-to every node in the OSM road graph. Odometry and compass heading from a
-NovAtel INSPVA unit propagate the particles between sign observations.
+GPS-free vehicle localization on the Estonian road network. Uses a particle-filter-inspired localization filter to estimate position by matching road sign distances (e.g., "TARTU 82 km") against precomputed road distances from city centers to map nodes. Vehicle motion (odometry and heading) moves particles between sign readings.
 
-## Pipeline
+## Simple Workflow
+
+The system runs in a loop:
+1. **Read a sign observation**: OCR extracts city names and distances from camera images.
+2. **Move guesses forward**: Propagate particles along roads using traveled distance and compass heading.
+3. **Score guesses**: Check how well each particle's road distance to the cities matches the sign distances.
+4. **Keep the best guesses**: Resample particles to focus on high-scoring ones, adding small random shifts for variety.
+5. **Estimate position**: Compute the most likely location from the particle weights.
+
+Particles are guesses about the vehicle's position on road edges. Each guess includes latitude, longitude, edge ID, and position along the edge.
+
+## Pipeline Overview
 
 ```
 ROS1 .bag file
@@ -30,7 +37,7 @@ ROS1 .bag file
 |---|---|
 | `bag_replay.py` | Main script, replays a ROS1 bag through the pipeline |
 | `ocr.py` | YOLO sign detection + EasyOCR + city/distance parsing |
-| `localizer.py` | Particle filter, city distance service, visualisation |
+| `localizer.py` | Localization filter (`ParticleFilter` class), city distance service, visualisation |
 | `place_names.py` | List of Estonian place names for OCR fuzzy correction |
 
 ## Setup
